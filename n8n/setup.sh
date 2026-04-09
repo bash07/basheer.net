@@ -24,21 +24,34 @@ echo ""
 echo "[1/6] Updating system packages..."
 sudo apt update && sudo apt upgrade -y
 
-# --- 2. Add Swap (Critical for 1GB RAM) ---
+# --- 2. Swap Setup (only needed if RAM < 2GB) ---
 echo ""
-echo "[2/6] Creating 2GB swap file..."
-if [ ! -f /swapfile ]; then
-    # Use 'dd' instead of 'fallocate' — GCP persistent disks reject sparse
-    # swap files created by fallocate (causes "swapon failed: Invalid argument")
-    sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 status=progress
-    sudo chmod 600 /swapfile
-    sudo mkswap /swapfile
-    sudo swapon /swapfile
-    echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-    echo "✅ Swap file created and enabled"
+echo "[2/6] Checking memory..."
+TOTAL_RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
+echo "  Total RAM: ${TOTAL_RAM_MB} MB"
+
+if [ "$TOTAL_RAM_MB" -ge 2048 ]; then
+    echo "✅ RAM >= 2GB — swap not needed, skipping"
 else
-    echo "⏭️  Swap file already exists, skipping"
+    echo "  RAM < 2GB — setting up swap..."
+    if free | grep -q "^Swap:" && ! free | grep -q "^Swap:.*0 *0 *0"; then
+        echo "⏭️  Swap already active, skipping"
+    else
+        # Try direct swapfile (no systemd required)
+        sudo rm -f /swapfile
+        sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 status=progress
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        if sudo swapon /swapfile; then
+            echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+            echo "✅ Swap file enabled"
+        else
+            echo "⚠️  Swap setup skipped (disk type incompatible — OK if RAM > 512MB)"
+            sudo rm -f /swapfile
+        fi
+    fi
 fi
+free -h | grep -E "Mem:|Swap:"
 
 # --- 3. Install Docker ---
 echo ""
