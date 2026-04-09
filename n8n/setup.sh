@@ -28,7 +28,9 @@ sudo apt update && sudo apt upgrade -y
 echo ""
 echo "[2/6] Creating 2GB swap file..."
 if [ ! -f /swapfile ]; then
-    sudo fallocate -l 2G /swapfile
+    # Use 'dd' instead of 'fallocate' — GCP persistent disks reject sparse
+    # swap files created by fallocate (causes "swapon failed: Invalid argument")
+    sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 status=progress
     sudo chmod 600 /swapfile
     sudo mkswap /swapfile
     sudo swapon /swapfile

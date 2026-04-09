@@ -76,7 +76,7 @@ This blog also serves as a **living experiment** in:
 If you find something interesting, feel free to share it. You can also find me on:
 
 - 🐙 [GitHub](https://github.com/bash07)
-- 💼 [LinkedIn](https://linkedin.com/in/basheer)
+- 💼 [LinkedIn](https://linkedin.com/in/bash77)
 - 📡 [RSS Feed](/index.xml) — subscribe to get new posts delivered
 
 Happy reading! 📚
