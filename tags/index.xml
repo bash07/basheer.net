@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Tags on Basheer&#39;s Blog</title>
+    <link>https://basheer.net/tags/</link>
+    <description>Recent content in Tags on Basheer&#39;s Blog</description>
+    <generator>Hugo</generator>
+    <language>en-us</language>
+    <lastBuildDate>Thu, 09 Apr 2026 00:00:00 +0000</lastBuildDate>
+    <atom:link href="https://basheer.net/tags/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>Automation</title>
+      <link>https://basheer.net/tags/automation/</link>
+      <pubDate>Thu, 09 Apr 2026 00:00:00 +0000</pubDate>
+      <guid>https://basheer.net/tags/automation/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Blogging</title>
+      <link>https://basheer.net/tags/blogging/</link>
+      <pubDate>Thu, 09 Apr 2026 00:00:00 +0000</pubDate>
+      <guid>https://basheer.net/tags/blogging/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Introduction</title>
+      <link>https://basheer.net/tags/introduction/</link>
+      <pubDate>Thu, 09 Apr 2026 00:00:00 +0000</pubDate>
+      <guid>https://basheer.net/tags/introduction/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Meta</title>
+      <link>https://basheer.net/tags/meta/</link>
+      <pubDate>Thu, 09 Apr 2026 00:00:00 +0000</pubDate>
+      <guid>https://basheer.net/tags/meta/</guid>
+      <description></description>
+    </item>
+  </channel>
+</rss>
