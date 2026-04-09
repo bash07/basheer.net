@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   n8n:
     image: n8nio/n8n:latest
@@ -14,17 +12,17 @@ services:
       - WEBHOOK_URL=https://n8n.basheer.net/
       - GENERIC_TIMEZONE=Asia/Kolkata
 
-      # --- Authentication ---
-      # ⚠️ CHANGE THIS PASSWORD before deploying!
-      - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=admin
-      - N8N_BASIC_AUTH_PASSWORD=CHANGE_THIS_PASSWORD
+      # --- Authentication (N8N v2+) ---
+      # Basic auth was removed in N8N v1.x — using built-in user management instead.
+      # On FIRST visit to https://n8n.basheer.net, you will be prompted to create
+      # an owner account (email + password). That becomes your login.
+      - N8N_PERSONALIZATION_ENABLED=false
 
       # --- Performance (for e2-micro) ---
       - N8N_METRICS=false
       - N8N_DIAGNOSTICS_ENABLED=false
       - EXECUTIONS_DATA_PRUNE=true
-      - EXECUTIONS_DATA_MAX_AGE=168  # 7 days
+      - EXECUTIONS_DATA_MAX_AGE=168 # 7 days
 
     volumes:
       - n8n_data:/home/node/.n8n
