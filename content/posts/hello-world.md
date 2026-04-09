@@ -1,0 +1,82 @@
+---
+title: "Welcome to Basheer's Blog"
+date: 2026-04-09
+lastmod: 2026-04-09
+draft: false
+description: "The first post on my new blog — powered by Hugo, GitHub Pages, and AI automation."
+summary: "A quick introduction to this blog, what it's about, and how it's built with a fully automated zero-cost stack."
+tags: ["meta", "introduction", "blogging", "automation"]
+categories: ["General"]
+keywords: ["personal blog", "Hugo", "GitHub Pages", "automated blog", "zero cost blog"]
+author: "Basheer"
+showToc: true
+TocOpen: false
+ShowReadingTime: true
+ShowBreadCrumbs: true
+ShowPostNavLinks: true
+ShowWordCount: true
+cover:
+    image: ""
+    alt: "Welcome to Basheer's Blog"
+    caption: ""
+---
+
+## Hello, World! 🌍
+
+Welcome to my blog. This is a space where I write about technology, AI, embedded systems, and software engineering.
+
+I've always believed in learning by building, and this blog itself is a testament to that philosophy. What you're reading is served through a fully automated pipeline that costs exactly **$0 per month** to run.
+
+## What Makes This Blog Special
+
+This isn't just another static site. It's a **fully automated content platform** built on modern, free-tier infrastructure:
+
+### The Tech Stack
+
+| Component | Technology | Cost |
+|-----------|-----------|------|
+| **Static Site Generator** | Hugo + PaperMod | Free |
+| **Hosting** | GitHub Pages | Free |
+| **CDN & DNS** | Cloudflare | Free |
+| **CI/CD** | GitHub Actions | Free |
+| **AI Content** | Google Gemini API | Free |
+| **Automation** | N8N on GCP e2-micro | Free |
+
+### How It Works
+
+1. **AI generates blog posts** using Google's Gemini API with carefully crafted prompts
+2. **N8N orchestrates the workflow** — from content generation to committing the markdown files
+3. **GitHub Actions** detects the new commit and automatically builds the site with Hugo
+4. **GitHub Pages** serves the static HTML globally
+5. **Cloudflare** sits in front as a CDN, providing caching, DDoS protection, and SSL
+
+Every aspect — from content generation to deployment — is automated. The entire pipeline runs without me lifting a finger (well, except for reviewing the content 😄).
+
+## What to Expect
+
+I'll be writing about topics I'm passionate about:
+
+- 🤖 **AI & Machine Learning** — Practical applications, tools, prompt engineering, and real-world AI integration
+- 🔌 **Embedded Systems** — IoT, firmware development, RTOS, and hardware-software co-design
+- 🛠️ **Software Engineering** — Architecture patterns, best practices, and tooling that actually helps
+- ☁️ **Cloud & DevOps** — Infrastructure as code, CI/CD, and automation workflows
+- 📝 **Building in Public** — Documenting the journey of creating this automated blog and other side projects
+
+## Why Another Blog?
+
+In the age of AI-generated content flooding the internet, I believe in **quality over quantity**. Each post here — whether AI-assisted or hand-written — goes through careful review to ensure it provides genuine value.
+
+This blog also serves as a **living experiment** in:
+- How far you can push free-tier infrastructure
+- What AI-assisted content creation actually looks like in practice
+- Building SEO-optimized sites that are discoverable by both search engines and AI systems
+
+## Let's Connect
+
+If you find something interesting, feel free to share it. You can also find me on:
+
+- 🐙 [GitHub](https://github.com/bash07)
+- 💼 [LinkedIn](https://linkedin.com/in/basheer)
+- 📡 [RSS Feed](/index.xml) — subscribe to get new posts delivered
+
+Happy reading! 📚

@@ -1,0 +1,63 @@
+name: Deploy Hugo Site to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Install Hugo
+        uses: peaceiris/actions-hugo@v3
+        with:
+          hugo-version: "latest"
+          extended: true
+
+      - name: Build Site
+        run: hugo --minify
+
+      - name: Generate llms-full.txt
+        run: |
+          echo "# Basheer's Blog — Full Content" > public/llms-full.txt
+          echo "" >> public/llms-full.txt
+          echo "> Full text content of basheer.net for AI systems. Auto-generated on $(date -u +%Y-%m-%dT%H:%M:%SZ)." >> public/llms-full.txt
+          echo "" >> public/llms-full.txt
+          for f in content/posts/*.md; do
+            if [ -f "$f" ]; then
+              echo "---" >> public/llms-full.txt
+              echo "" >> public/llms-full.txt
+              # Extract title from front matter
+              title=$(grep '^title:' "$f" | head -1 | sed 's/title: *"*//;s/"*$//')
+              echo "## $title" >> public/llms-full.txt
+              echo "" >> public/llms-full.txt
+              # Strip front matter (between --- markers) and append body
+              awk '/^---$/{c++;next}c>=2' "$f" >> public/llms-full.txt
+              echo "" >> public/llms-full.txt
+            fi
+          done
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public
+          publish_branch: gh-pages
+          cname: basheer.net

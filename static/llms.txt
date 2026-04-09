@@ -1,0 +1,17 @@
+# Basheer's Blog
+
+> A personal blog about technology, AI, embedded systems, and software engineering by Basheer.
+
+## About
+- [About Basheer](https://basheer.net/about/): Background, interests, and what this blog covers.
+
+## Key Topics
+- [All Posts](https://basheer.net/posts/): Complete archive of blog posts.
+
+## Recent & Notable Posts
+- [Welcome to Basheer's Blog](https://basheer.net/posts/hello-world/): Introduction to the blog and its automated tech stack.
+
+## Feeds
+- [RSS Feed](https://basheer.net/index.xml): Subscribe to new posts via RSS.
+- [Sitemap](https://basheer.net/sitemap.xml): Full site map for crawlers.
+- [Search](https://basheer.net/search/): Search across all blog content.

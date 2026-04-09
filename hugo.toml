@@ -1,0 +1,123 @@
+baseURL = "https://basheer.net/"
+languageCode = "en-us"
+title = "Basheer's Blog"
+theme = "PaperMod"
+paginate = 10
+
+# Build settings
+enableRobotsTXT = true
+buildDrafts = false
+buildFuture = false
+buildExpired = false
+enableEmoji = true
+pygmentsUseClasses = true
+
+# SEO: Generate sitemap
+[sitemap]
+  changefreq = "weekly"
+  filename = "sitemap.xml"
+  priority = 0.5
+
+# SEO: RSS feed + JSON search index
+[outputs]
+  home = ["HTML", "RSS", "JSON"]
+
+# Minification
+[minify]
+  disableXML = true
+  minifyOutput = true
+
+[params]
+  env = "production"
+  title = "Basheer's Blog"
+  description = "Insights on technology, AI, embedded systems, and software engineering"
+  keywords = ["blog", "technology", "AI", "embedded systems", "software engineering"]
+  author = "Basheer"
+  # images = ["images/og-default.png"]
+
+  DateFormat = "January 2, 2006"
+  defaultTheme = "auto"
+  disableThemeToggle = false
+  ShowReadingTime = true
+  ShowShareButtons = true
+  ShowPostNavLinks = true
+  ShowBreadCrumbs = true
+  ShowCodeCopyButtons = true
+  ShowWordCount = true
+  ShowRssButtonInSectionTermList = true
+  UseHugoToc = true
+  disableSpecial1stPost = false
+  disableScrollToTop = false
+  comments = false
+  hidemeta = false
+  hideSummary = false
+  showtoc = true
+  tocopen = false
+
+  [params.homeInfoParams]
+    Title = "Hi, I'm Basheer 👋"
+    Content = "Welcome to my blog — writing about technology, AI, embedded systems, and the craft of software engineering."
+
+  [[params.socialIcons]]
+    name = "github"
+    url = "https://github.com/bash07"
+
+  [[params.socialIcons]]
+    name = "linkedin"
+    url = "https://linkedin.com/in/basheer"
+
+  [[params.socialIcons]]
+    name = "rss"
+    url = "/index.xml"
+
+  # SEO: Open Graph / Twitter defaults
+  [params.cover]
+    hidden = false
+    hiddenInList = false
+    hiddenInSingle = false
+
+  # Search configuration (PaperMod built-in with Fuse.js)
+  [params.fuseOpts]
+    isCaseSensitive = false
+    shouldSort = true
+    location = 0
+    distance = 1000
+    threshold = 0.4
+    minMatchCharLength = 0
+    keys = ["title", "permalink", "summary", "content"]
+
+# SEO: Clean, structured permalinks
+[permalinks]
+  posts = "/posts/:slug/"
+
+# Navigation menu
+[[menu.main]]
+  identifier = "posts"
+  name = "Posts"
+  url = "/posts/"
+  weight = 10
+
+[[menu.main]]
+  identifier = "tags"
+  name = "Tags"
+  url = "/tags/"
+  weight = 15
+
+[[menu.main]]
+  identifier = "about"
+  name = "About"
+  url = "/about/"
+  weight = 20
+
+[[menu.main]]
+  identifier = "search"
+  name = "🔍"
+  url = "/search/"
+  weight = 30
+
+# Markup config
+[markup]
+  [markup.highlight]
+    noClasses = false
+  [markup.goldmark.renderer]
+    unsafe = true

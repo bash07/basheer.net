@@ -1,0 +1,14 @@
+# Basheer's Blog — Full Content
+
+> This file contains the full text content of basheer.net for AI consumption.
+> It is auto-generated during each build by the GitHub Actions workflow.
+
+---
+
+## Welcome to Basheer's Blog
+
+Welcome to my blog. This is a space where I write about technology, AI, embedded systems, and software engineering.
+
+This blog runs on a fully automated zero-cost stack: Hugo for static site generation, GitHub Pages for hosting, Cloudflare for CDN/DNS, GitHub Actions for CI/CD, Google Gemini for AI content generation, and N8N for workflow automation.
+
+Topics covered include AI & Machine Learning, Embedded Systems, Software Engineering, Cloud & DevOps, and Building in Public.
