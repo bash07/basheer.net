@@ -1,6 +1,6 @@
 # Basheer's Blog — Full Content
 
-> Full text content of basheer.net for AI systems. Auto-generated on 2026-04-09T11:46:51Z.
+> Full text content of basheer.net for AI systems. Auto-generated on 2026-04-09T16:08:28Z.
 
 ---
 
@@ -62,7 +62,7 @@ This blog also serves as a **living experiment** in:
 If you find something interesting, feel free to share it. You can also find me on:
 
 - 🐙 [GitHub](https://github.com/bash07)
-- 💼 [LinkedIn](https://linkedin.com/in/basheer)
+- 💼 [LinkedIn](https://linkedin.com/in/bash77)
 - 📡 [RSS Feed](/index.xml) — subscribe to get new posts delivered
 
 Happy reading! 📚
