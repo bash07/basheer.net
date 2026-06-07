@@ -9,9 +9,10 @@ import logging
 import time
 from datetime import datetime
 
-from telegram import Update, BotCommand
+from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
     ContextTypes,
@@ -38,6 +39,7 @@ _startup_time = time.time()
 _DOMAIN_LABELS: dict[str, str] = {
     "content":  "📝 Content",
     "ops":      "🛠 Ops",
+    "finance":  "💹 Finance",
 }
 
 
@@ -63,29 +65,159 @@ def _group_by_domain(modules: list[dict]) -> tuple[list[dict], dict[str, list[di
     return flat, grouped
 
 
+# ── Hierarchical inline-keyboard menu helpers ────────────────────────────────
+
+def _build_main_menu_keyboard() -> InlineKeyboardMarkup:
+    """
+    Top-level menu: one button per domain + one row per flat (legacy) module.
+    Each button callback_data encodes "menu:domain" or "menu:flat:<name>".
+    """
+    mods = get_loaded()
+    flat, grouped = _group_by_domain(mods)
+    rows: list[list[InlineKeyboardButton]] = []
+
+    for domain in grouped:
+        rows.append([InlineKeyboardButton(
+            _domain_label(domain),
+            callback_data=f"menu:domain:{domain}",
+        )])
+    for m in flat:
+        rows.append([InlineKeyboardButton(
+            m["description"],
+            callback_data=f"menu:flat:{m['name']}",
+        )])
+
+    return InlineKeyboardMarkup(rows)
+
+
+def _build_domain_keyboard(domain: str) -> InlineKeyboardMarkup:
+    """
+    Drill-down view: one button per command in the domain, plus a ← Back row.
+    """
+    mods = get_loaded()
+    _, grouped = _group_by_domain(mods)
+    domain_mods = grouped.get(domain, [])
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for m in domain_mods:
+        for cmd in m["commands"]:
+            # Find help string for this command (first match)
+            hint = next(
+                (h for h in m.get("help", []) if f"/{cmd}" in h),
+                f"/{cmd}",
+            )
+            # Strip backtick markdown so the button label is clean
+            label = f"/{cmd}"
+            rows.append([InlineKeyboardButton(label, callback_data=f"menu:cmd:{cmd}")])
+
+    rows.append([InlineKeyboardButton("← Back", callback_data="menu:main")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _build_flat_keyboard(mod_name: str) -> InlineKeyboardMarkup:
+    """Drill-down view for a flat (legacy) module."""
+    mods = get_loaded()
+    flat, _ = _group_by_domain(mods)
+    mod = next((m for m in flat if m["name"] == mod_name), None)
+
+    rows: list[list[InlineKeyboardButton]] = []
+    if mod:
+        for cmd in mod["commands"]:
+            rows.append([InlineKeyboardButton(f"/{cmd}", callback_data=f"menu:cmd:{cmd}")])
+    rows.append([InlineKeyboardButton("← Back", callback_data="menu:main")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _main_menu_text() -> str:
+    return "🤖 *Automation Server*\n\nChoose a category:"
+
+
+def _domain_menu_text(domain: str) -> str:
+    mods = get_loaded()
+    _, grouped = _group_by_domain(mods)
+    domain_mods = grouped.get(domain, [])
+    lines = [f"{_domain_label(domain)} commands:\n"]
+    for m in domain_mods:
+        lines.append(f"*{m['description']}*")
+        for item in m.get("help", []):
+            lines.append(f"  {item}")
+    return "\n".join(lines)
+
+
+def _flat_menu_text(mod_name: str) -> str:
+    mods = get_loaded()
+    flat, _ = _group_by_domain(mods)
+    mod = next((m for m in flat if m["name"] == mod_name), None)
+    if not mod:
+        return f"Module *{mod_name}* not found."
+    lines = [f"*{mod['description']}*\n"]
+    for item in mod.get("help", []):
+        lines.append(f"  {item}")
+    return "\n".join(lines)
+
+
 # ── Built-in command handlers ─────────────────────────────────────────────────
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    mods = get_loaded()
-    flat, grouped = _group_by_domain(mods)
-    lines = ["🤖 *Automation Server*\n", "*Loaded modules:*"]
+    """Show the compact interactive main menu."""
+    await update.message.reply_text(
+        _main_menu_text(),
+        parse_mode="Markdown",
+        reply_markup=_build_main_menu_keyboard(),
+    )
 
-    # Flat legacy modules — no domain header (backward-compatible display)
-    for m in flat:
-        lines.append(f"• {m['description']}")
-        for cmd in m["commands"]:
-            lines.append(f"  `/{cmd}`")
 
-    # Domain-grouped modules — show under labelled headers
-    for domain, domain_mods in grouped.items():
-        lines.append(f"\n*{_domain_label(domain)}:*")
-        for m in domain_mods:
-            lines.append(f"• {m['description']}")
-            for cmd in m["commands"]:
-                lines.append(f"  `/{cmd}`")
+async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Alias for /menu — same interactive main menu."""
+    await update.message.reply_text(
+        _main_menu_text(),
+        parse_mode="Markdown",
+        reply_markup=_build_main_menu_keyboard(),
+    )
 
-    lines.append("\nType /help for full command list.")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handle all menu inline-button presses.
+
+    callback_data patterns:
+      menu:main            — go back to the top-level menu
+      menu:domain:<name>   — drill into a domain
+      menu:flat:<name>     — drill into a flat (legacy) module
+      menu:cmd:<cmd>       — user tapped a command name (just acknowledge)
+    """
+    query = update.callback_query
+    await query.answer()  # dismiss the loading spinner
+
+    data = query.data or ""
+
+    if data == "menu:main":
+        await query.edit_message_text(
+            _main_menu_text(),
+            parse_mode="Markdown",
+            reply_markup=_build_main_menu_keyboard(),
+        )
+
+    elif data.startswith("menu:domain:"):
+        domain = data[len("menu:domain:"):]
+        await query.edit_message_text(
+            _domain_menu_text(domain),
+            parse_mode="Markdown",
+            reply_markup=_build_domain_keyboard(domain),
+        )
+
+    elif data.startswith("menu:flat:"):
+        mod_name = data[len("menu:flat:"):]
+        await query.edit_message_text(
+            _flat_menu_text(mod_name),
+            parse_mode="Markdown",
+            reply_markup=_build_flat_keyboard(mod_name),
+        )
+
+    elif data.startswith("menu:cmd:"):
+        cmd = data[len("menu:cmd:"):]
+        # Just show a nudge — the user can tap the command in chat to run it
+        await query.answer(f"Type /{cmd} in chat to run it.", show_alert=False)
 
 
 async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -188,9 +320,19 @@ def create_bot_app() -> Application:
 
     # Built-in slash commands
     bot_app.add_handler(CommandHandler("start",  start_handler,  filters=AUTHORIZED))
+    bot_app.add_handler(CommandHandler("menu",   menu_handler,   filters=AUTHORIZED))
     bot_app.add_handler(CommandHandler("status", status_handler, filters=AUTHORIZED))
     bot_app.add_handler(CommandHandler("help",   help_handler,   filters=AUTHORIZED))
     bot_app.add_handler(CommandHandler("cancel", cancel_handler, filters=AUTHORIZED))
+
+    # Inline-keyboard menu callbacks (no auth filter needed — only our chat_id
+    # can press buttons in our private bot, but we filter anyway for safety)
+    bot_app.add_handler(
+        CallbackQueryHandler(
+            menu_callback_handler,
+            pattern=r"^menu:",
+        )
+    )
 
     # Free-text handler — must be registered AFTER all CommandHandlers
     # so that /commands are matched first and never fall through here.

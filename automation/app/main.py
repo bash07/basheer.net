@@ -25,9 +25,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Import all module models so SQLAlchemy registers their tables ─────────────
-import modules.blog.models   # noqa: F401, E402
-import modules.monitor.models  # noqa: F401, E402
+# Module models are auto-imported by core.registry during load_modules().
+# No explicit model imports are needed here.
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -38,10 +37,6 @@ async def lifespan(app: FastAPI):
     if missing:
         logger.warning("Missing config: %s — some features disabled", missing)
 
-    from core.db import init_db
-    init_db()
-    logger.info("✅ Database initialised")
-
     from core.bot import create_bot_app, bot_app as _bot
     bot = create_bot_app()
 
@@ -50,7 +45,11 @@ async def lifespan(app: FastAPI):
 
     from core.registry import load_modules
     from core.bot import AUTHORIZED
-    load_modules(bot, scheduler, AUTHORIZED)
+    load_modules(bot, scheduler, AUTHORIZED)  # auto-imports all module models
+
+    from core.db import init_db
+    init_db()  # called after load_modules() so all tables are registered
+    logger.info("✅ Database initialised")
 
     scheduler.start()
     logger.info("✅ Scheduler started")
@@ -61,15 +60,27 @@ async def lifespan(app: FastAPI):
     # Register commands with Telegram for native auto-complete menu
     from telegram import BotCommand
     from core.registry import get_loaded
+
+    # Build a lookup: command → first help string for it
+    def _cmd_hint(m: dict, cmd: str) -> str:
+        for h in m.get("help", []):
+            if f"/{cmd}" in h:
+                # Strip markdown backticks and leading slash+cmd for a clean description
+                clean = h.replace("`", "").strip()
+                # Telegram descriptions max 256 chars
+                return clean[:90] if len(clean) > 90 else clean
+        return f"{m['name']} — {cmd}"
+
     cmds = [
-        BotCommand("start", "Welcome & module list"),
+        BotCommand("start",  "Interactive module menu"),
+        BotCommand("menu",   "Interactive module menu"),
         BotCommand("status", "System status & uptime"),
-        BotCommand("help", "Full command reference"),
+        BotCommand("help",   "Full command reference"),
         BotCommand("cancel", "Cancel running tasks"),
     ]
     for m in get_loaded():
         for c in m["commands"]:
-            cmds.append(BotCommand(c, f"{m['name']} module command"))
+            cmds.append(BotCommand(c, _cmd_hint(m, c)))
     await bot.bot.set_my_commands(cmds)
 
     await bot.updater.start_polling(drop_pending_updates=True)

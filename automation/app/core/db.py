@@ -15,7 +15,7 @@ engine = create_engine(
     f"sqlite:///{_db_path}",
     connect_args={"check_same_thread": False},
 )
-SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, expire_on_commit=False)
 
 
 class Base(DeclarativeBase):

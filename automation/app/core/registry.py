@@ -29,6 +29,13 @@ def _register_module(mod_path: str, bot_app, scheduler, authorized_filter,
                      domain: str | None) -> None:
     """Import a module by dotted path, call register(), and store the result."""
     try:
+        # Auto-import models.py so SQLAlchemy tables register with Base
+        # before init_db() is called. Modules without models.py are skipped.
+        try:
+            importlib.import_module(f"{mod_path}.models")
+        except ModuleNotFoundError:
+            pass
+
         mod = importlib.import_module(mod_path)
         if not hasattr(mod, "register"):
             logger.warning("Module %s has no register() — skipping", mod_path)

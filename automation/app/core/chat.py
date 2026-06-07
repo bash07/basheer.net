@@ -1,14 +1,20 @@
-"""
-Conversational AI assistant for the Telegram free-text interface.
+"""Conversational AI assistant — multi-agent router.
 
-The ChatAgent has tool functions that wrap existing module pipelines.
-When a user sends a plain-text message the agent decides whether to:
-  - Call a tool (trigger an automation) and return its output, or
-  - Answer directly from its own knowledge.
+Architecture:
+  Router agent (nano tier) receives every free-text Telegram message and
+  delegates to the appropriate domain sub-agent via tool-calling:
 
-Conversation history is kept in an in-memory deque (last 30 messages).
-This is intentionally not persisted to SQLite — history resets on restart,
-which is fine for a single-user personal assistant.
+    • Blog/content requests  → modules/blog/chat_tools.handle_blog_request()
+    • Finance/trading queries → modules/finance/analyst (Phase 4 stub for now)
+    • Ops/monitor queries     → get_monitor_status() handled inline
+    • General questions       → answered directly by the router
+
+Conversation history (last 30 messages) is maintained at the router level.
+Sub-agent calls are single-shot — they receive the user text but not the
+full history. This is intentional and acceptable for action-oriented requests.
+
+Phase 4 note: Replace the handle_finance_request stub body with a call to
+  modules.finance.analyst.handle_finance_request(text)
 """
 import logging
 from collections import deque
@@ -21,158 +27,68 @@ from core.llm import get_model
 logger = logging.getLogger(__name__)
 
 # ── Conversation history ──────────────────────────────────────────────────────
-# Stores the last N ModelMessage objects so the agent maintains context.
 _history: deque[ModelMessage] = deque(maxlen=30)
 
-
-# ── Agent definition ──────────────────────────────────────────────────────────
-
+# ── Router agent ──────────────────────────────────────────────────────────────
 _SYSTEM_PROMPT = """
 You are a personal automation assistant embedded in a Telegram bot.
-You help manage a blog automation platform and a site uptime monitor.
+You manage a multi-domain platform: blog content, site monitoring, and
+financial market tracking.
 
 Your capabilities (via tools):
-  - Generate and publish a new blog post on any topic
-  - Get a list of content ideas
-  - Show recently published posts
-  - Show the current uptime status of all monitored websites
+  - Blog: generate posts, get content ideas, show recent posts
+  - Finance: track tickers, run TA/fundamental analysis, manage portfolio
+  - Ops: check uptime status of monitored websites
+  - General: answer knowledge questions directly
 
-Behaviour rules:
-  - If the user's message maps clearly to one of your tools, call it directly.
-    Do not ask for confirmation — just act and report the result.
-  - If the user's message is ambiguous (e.g. "write something about Python"),
-    make a reasonable assumption and proceed. Mention the assumption in your reply.
-  - If the message is a general question (not an automation request),
-    answer it helpfully and concisely — no tool call needed.
-  - Keep all replies concise. This is Telegram, not a document editor.
-  - Use plain text only. Do NOT use markdown headers (##), bold (**), or bullets (-)
-    unless they genuinely improve readability in a short reply.
+Routing rules (pick ONE tool per message):
+  - Blog/content/writing requests          → handle_blog_request
+  - Finance/trading/market/crypto/portfolio → handle_finance_request
+  - Site status/uptime/monitoring          → get_monitor_status
+  - General questions needing no action    → answer directly, no tool needed
+
+Keep all replies concise. This is Telegram, not a document editor.
+Plain text only — no markdown headers unless they genuinely help.
 """.strip()
 
-assistant = Agent(
+router = Agent(
     model=get_model("nano"),
     system_prompt=_SYSTEM_PROMPT,
 )
 
 
-# ── Tools ─────────────────────────────────────────────────────────────────────
+# ── Delegation tools ──────────────────────────────────────────────────────────
 
-@assistant.tool_plain
-async def generate_blog_post(topic: str, category: str = "Technology", is_draft: bool = False) -> str:
+@router.tool_plain
+async def handle_blog_request(text: str) -> str:
     """
-    Generate and publish a complete blog post on the given topic.
-    If is_draft is True, it will be pushed to the repository as a draft (draft: true) instead of being published immediately.
-    Returns immediately after queuing the generation. The user will be notified via Telegram.
-    Use this when the user asks to write, generate, or publish a post.
+    Handle blog and content creation requests.
+    Use for: writing/generating posts, content ideas, draft posts,
+    showing recent published posts.
     """
-    import uuid
-    from core.queue import queue
-    from config import config
-
-    task_id = str(uuid.uuid4())[:8]
-    logger.info("[chat] Queueing generate_blog_post(topic=%r, is_draft=%r) as task %s", topic, is_draft, task_id)
-
-    async def _run():
-        from modules.blog.pipeline import run_blog_pipeline
-        from modules.blog.tools import notify_telegram
-        try:
-            url, draft = await run_blog_pipeline(topic, category, is_draft=is_draft)
-            
-            # Save to DB (so /posts and recent posts tool can see it)
-            from core.db import get_db
-            from modules.blog.models import BlogPost
-            with get_db() as db:
-                slug = url.rstrip("/").split("/")[-1]
-                status_db = "draft" if is_draft else "published"
-                db.add(BlogPost(title=draft.title, slug=slug, category=category, url=url, status=status_db))
-                
-        except Exception as e:
-            logger.error("[chat:%s] generate_blog_post failed: %s", task_id, e, exc_info=True)
-            await notify_telegram(f"❌ Blog generation failed for topic '{topic}': {e}")
-
-    queue.submit(task_id, f"generate:{topic}", "blog", _run(), model_info=config.llm_model)
-    
-    status_word = "draft" if is_draft else "post"
-    return f"I have started generating the {status_word} in the background. It usually takes 2-5 minutes. You will receive a notification when it's done."
+    logger.info("[router] → blog assistant: %r", text[:80])
+    from modules.blog.chat_tools import handle_blog_request as _delegate
+    return await _delegate(text)
 
 
-@assistant.tool_plain
-async def get_content_ideas() -> str:
+@router.tool_plain
+async def handle_finance_request(text: str) -> str:
     """
-    Generate 5 original blog post ideas tailored to the blog's niche.
-    Returns immediately after queuing. The user will be notified via Telegram.
-    Use this when the user asks for ideas, inspiration, or topic suggestions.
+    Handle finance, trading, and market analysis requests.
+    Use for: ticker prices, technical analysis, charts, RSI, EMAs,
+    fundamental analysis, crypto, forex, commodities, watchlists, price alerts.
     """
-    import uuid
-    from core.queue import queue
-    from config import config
-
-    task_id = str(uuid.uuid4())[:8]
-    logger.info("[chat] Queueing get_content_ideas as task %s", task_id)
-
-    async def _run():
-        from modules.blog.pipeline import run_ideas_pipeline
-        from modules.blog.tools import notify_telegram
-        try:
-            ideas = await run_ideas_pipeline()
-            lines = ["📋 *Weekly Blog Ideas*\n"]
-            for i, idea in enumerate(ideas, 1):
-                lines.append(
-                    f"{i}. *{idea.topic}*\n"
-                    f"   📂 {idea.category}\n"
-                    f"   💡 {idea.angle}\n"
-                    f"   ⏰ {idea.why_now}"
-                )
-            lines.append("\n_Reply with a topic to generate a post._")
-            await notify_telegram("\n\n".join(lines))
-        except Exception as e:
-            logger.error("[chat:%s] get_content_ideas failed: %s", task_id, e, exc_info=True)
-            await notify_telegram(f"❌ Ideas generation failed: {e}")
-
-    queue.submit(task_id, "ideas", "blog", _run(), model_info=config.llm_model)
-    return "I am brainstorming ideas in the background. I will send them to you shortly."
+    logger.info("[router] → finance assistant: %r", text[:80])
+    return await _dispatch_finance(text)
 
 
-@assistant.tool_plain
-def get_recent_posts(limit: int = 5) -> str:
-    """
-    Return the most recently published blog posts from the database.
-    Use this when the user asks what was published, recent posts, or post history.
-    """
-    logger.info("[chat] Tool: get_recent_posts(limit=%d)", limit)
-    try:
-        from sqlalchemy import select, desc
-        from core.db import get_db
-        from modules.blog.models import BlogPost
-
-        with get_db() as db:
-            posts = db.execute(
-                select(BlogPost)
-                .where(BlogPost.status == "published")
-                .order_by(desc(BlogPost.published_at))
-                .limit(limit)
-            ).scalars().all()
-
-        if not posts:
-            return "No published posts found yet."
-
-        lines = [f"Last {len(posts)} published posts:"]
-        for p in posts:
-            date = p.published_at.strftime("%Y-%m-%d")
-            lines.append(f"• [{date}] {p.title}\n  {p.url}")
-        return "\n".join(lines)
-    except Exception as e:
-        logger.error("[chat] get_recent_posts failed: %s", e, exc_info=True)
-        return f"Could not retrieve posts: {e}"
-
-
-@assistant.tool_plain
+@router.tool_plain
 def get_monitor_status() -> str:
     """
     Return the current uptime status of all monitored websites.
-    Use this when the user asks if sites are up, down, or about monitor status.
+    Use when the user asks if sites are up, down, or about monitor/uptime status.
     """
-    logger.info("[chat] Tool: get_monitor_status()")
+    logger.info("[router] Tool: get_monitor_status()")
     try:
         from sqlalchemy import select
         from core.db import get_db
@@ -194,34 +110,160 @@ def get_monitor_status() -> str:
                 status = "🟢 UP"
             else:
                 status = "🔴 DOWN"
-
-            checked = (
-                ep.last_checked_at.strftime("%H:%M") if ep.last_checked_at else "never"
-            )
+            checked = ep.last_checked_at.strftime("%H:%M") if ep.last_checked_at else "never"
             lines.append(f"{status}  {ep.name}  (last checked: {checked})")
         return "\n".join(lines)
     except Exception as e:
-        logger.error("[chat] get_monitor_status failed: %s", e, exc_info=True)
+        logger.error("[router] get_monitor_status failed: %s", e, exc_info=True)
         return f"Could not retrieve monitor status: {e}"
+
+
+# ── Finance dispatcher ────────────────────────────────────────────────────────
+
+_INTENT_PROMPT = """\
+You are a finance request parser. The user sent: "{text}"
+
+Reply with EXACTLY one JSON object and nothing else:
+  {{"intent": "<fundamental|ta|price|watchlist>", "symbol": "<TICKER or null>"}}
+
+intent rules:
+  fundamental — asks about company fundamentals, valuation, P/E, balance sheet, Graham, FA
+  ta          — asks about technical analysis, RSI, EMA, chart, MACD, signals, momentum
+  price       — asks the current price / quote of a specific ticker
+  watchlist   — asks to list watchlist, prices for all tickers, or no specific ticker
+
+symbol rules:
+  - Upper-case the ticker. Use yfinance conventions (INFY.NS for Indian stocks, BTC-USD for crypto).
+  - If the user types a company name like "Infosys", infer the primary listing ticker.
+  - If no specific ticker can be inferred, set symbol to null.
+"""
+
+
+async def _dispatch_finance(text: str) -> str:
+    """Parse intent + ticker from free text and delegate to the right finance function."""
+    import json
+    from pydantic_ai import Agent
+
+    # ── Step 1: parse intent & symbol via a nano LLM call ────────────────────
+    parser = Agent(model=get_model("nano"), system_prompt="You are a JSON-only responder.")
+    try:
+        raw = await parser.run(_INTENT_PROMPT.format(text=text))
+        parsed = json.loads(str(raw.output).strip())
+        intent = parsed.get("intent", "price")
+        symbol: str | None = parsed.get("symbol") or None
+    except Exception as e:
+        logger.warning("[finance] intent parse failed: %s", e)
+        intent, symbol = "price", None
+
+    logger.info("[finance] intent=%s symbol=%s", intent, symbol)
+
+    if symbol is None and intent != "watchlist":
+        return (
+            "I couldn't identify a ticker symbol from your message. "
+            "Try something like: 'Fundamental analysis of AAPL' or 'RSI for BTC-USD'."
+        )
+
+    # ── Step 2: delegate ──────────────────────────────────────────────────────
+    try:
+        if intent == "fundamental":
+            return await _run_fundamental(symbol)
+        elif intent == "ta":
+            return await _run_ta(symbol)
+        elif intent == "watchlist":
+            return await _run_watchlist_prices()
+        else:  # price
+            return await _run_price(symbol)
+    except Exception as e:
+        logger.error("[finance] dispatch error intent=%s symbol=%s: %s", intent, symbol, e, exc_info=True)
+        return f"❌ Could not complete the finance request for `{symbol}`: {e}"
+
+
+async def _run_fundamental(symbol: str) -> str:
+    """Fetch fundamentals and return a text report (no Telegram objects)."""
+    import asyncio
+    from modules.finance.fundamental.fetcher import fetch_fundamentals
+    from modules.finance.fundamental.strategies import STRATEGIES, DEFAULT_METHOD
+    from modules.finance.fundamental.analyst import generate_verdict
+    from modules.finance.fundamental.formatter import format_full_report
+
+    loop = asyncio.get_event_loop()
+    data = await loop.run_in_executor(None, fetch_fundamentals, symbol)
+    strategy = STRATEGIES[DEFAULT_METHOD]()
+    result = strategy.evaluate(data)
+    result.verdict = await generate_verdict(data, result)
+    return format_full_report(data, result)
+
+
+async def _run_ta(symbol: str) -> str:
+    """Run TA and return a text summary (no chart image in chat mode)."""
+    from modules.finance.technical.charts import fetch_ta_only
+    from modules.finance.technical.indicators import format_ta_summary
+
+    result = await fetch_ta_only(symbol)
+    return format_ta_summary(result)
+
+
+async def _run_price(symbol: str) -> str:
+    """Fetch the current price card for a single ticker."""
+    import asyncio
+    from modules.finance.watchlist.prices import fetch_price_detail, format_price_card
+
+    loop = asyncio.get_event_loop()
+    info = await loop.run_in_executor(None, fetch_price_detail, symbol)
+    return format_price_card(info)
+
+
+async def _run_watchlist_prices() -> str:
+    """Fetch prices for all watchlisted tickers and return a grouped summary."""
+    import asyncio
+    from sqlalchemy import select
+    from core.db import get_db
+    from modules.finance.watchlist.models import WatchlistEntry
+    from modules.finance.watchlist.prices import fetch_prices_batch, format_price_row
+    from modules.finance.watchlist.commands import _CATEGORY_LABELS
+
+    rows: list[dict] = []
+    with get_db() as db:
+        for e in db.execute(
+            select(WatchlistEntry).order_by(WatchlistEntry.category, WatchlistEntry.symbol)
+        ).scalars().all():
+            rows.append({"symbol": e.symbol, "category": e.category})
+
+    if not rows:
+        return "Your watchlist is empty. Use `/watch <ticker>` to add tickers."
+
+    loop = asyncio.get_event_loop()
+    prices = await loop.run_in_executor(None, fetch_prices_batch, [r["symbol"] for r in rows])
+
+    grouped: dict[str, list] = {}
+    for r in rows:
+        grouped.setdefault(r["category"], []).append(r["symbol"])
+
+    lines = ["💹 *Watchlist Prices*\n"]
+    for cat, symbols in grouped.items():
+        lines.append(f"*{_CATEGORY_LABELS.get(cat, cat)}*")
+        for sym in symbols:
+            lines.append(format_price_row(sym, prices.get(sym)))
+        lines.append("")
+    return "\n".join(lines).strip()
 
 
 # ── Public interface ──────────────────────────────────────────────────────────
 
 async def handle_message(text: str) -> str:
     """
-    Process a free-text Telegram message and return the assistant's reply.
-    Maintains conversation history across calls.
+    Process a free-text Telegram message and return the router's reply.
+    Maintains conversation history across calls (in-memory, resets on restart).
     """
     try:
-        result = await assistant.run(text, message_history=list(_history))
-        # Append the new exchange to history
+        result = await router.run(text, message_history=list(_history))
         _history.extend(result.all_messages())
         return str(result.output)
     except Exception as e:
-        logger.error("[chat] Assistant error: %s", e, exc_info=True)
+        logger.error("[router] error: %s", e, exc_info=True)
         return f"⚠️ Something went wrong: {e}"
 
 
 def clear_history() -> None:
-    """Clear the conversation history (e.g. on /cancel)."""
+    """Clear the conversation history (called by /cancel)."""
     _history.clear()

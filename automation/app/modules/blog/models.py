@@ -1,5 +1,5 @@
 """Blog module DB models."""
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy import String, DateTime, Text
 from core.db import Base
@@ -14,5 +14,5 @@ class BlogPost(Base):
     category: Mapped[str] = mapped_column(String(100), default="Technology")
     url: Mapped[str] = mapped_column(String(500))
     status: Mapped[str] = mapped_column(String(20), default="published")  # published | failed
-    published_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    published_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     error: Mapped[str | None] = mapped_column(Text, nullable=True)

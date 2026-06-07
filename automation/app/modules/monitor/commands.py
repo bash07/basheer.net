@@ -1,6 +1,6 @@
 """Telegram commands for the uptime monitor module."""
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, func, desc
 from telegram import Update
@@ -103,7 +103,7 @@ async def uptime_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Stats for last 24h.
     """
     target_name = " ".join(context.args) if context.args else None
-    since = datetime.utcnow() - timedelta(hours=24)
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
 
     with get_db() as db:
         if target_name:
