@@ -38,7 +38,7 @@ _startup_time = time.time()
 # Maps domain folder name → display label for Telegram messages.
 _DOMAIN_LABELS: dict[str, str] = {
     "content":  "📝 Content",
-    "ops":      "🛠 Ops",
+    "ops":      "⚙️ Ops",
     "finance":  "💹 Finance",
 }
 

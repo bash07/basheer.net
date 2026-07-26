@@ -13,6 +13,12 @@ Supports two layouts, and both can coexist without any module changes:
       The domain name (e.g. "content", "ops") is attached
       to the loaded module info dict for grouping in /help and /start.
 
+  Plugin packages (installed via /system install):
+      Any pip package that registers an entry point in the group
+      "automation.modules" is loaded automatically on startup.
+      Entry point value format: "<importable.path>:setup"
+      where setup(bot_app, scheduler, authorized_filter) -> dict.
+
 Discovery order within each level follows pkgutil.iter_modules() (alphabetical).
 """
 import importlib
@@ -50,12 +56,44 @@ def _register_module(mod_path: str, bot_app, scheduler, authorized_filter,
         logger.error("Failed to load module %s: %s", mod_path, e, exc_info=True)
 
 
+def _load_plugin_entrypoints(bot_app, scheduler, authorized_filter) -> None:
+    """
+    Discover and load any installed pip packages that register themselves
+    under the 'automation.modules' entry-point group.
+
+    Entry point format in pyproject.toml:
+        [project.entry-points."automation.modules"]
+        finance = "automation_finance.main:setup"
+
+    The callable must have the same signature as register():
+        setup(bot_app, scheduler, authorized_filter) -> dict
+    """
+    try:
+        from importlib.metadata import entry_points
+        eps = entry_points(group="automation.modules")
+    except Exception as e:
+        logger.warning("Could not read entry points: %s", e)
+        return
+
+    for ep in eps:
+        try:
+            setup_fn = ep.load()
+            info: dict = setup_fn(bot_app, scheduler, authorized_filter)
+            # Domain may be returned by the plugin or inferred from ep.name
+            if "domain" not in info:
+                info["domain"] = ep.name
+            _loaded.append(info)
+            logger.info("✅ Loaded plugin: %s (entry-point)", ep.name)
+        except Exception as e:
+            logger.error("Failed to load plugin %s: %s", ep.name, e, exc_info=True)
+
+
 def load_modules(bot_app, scheduler, authorized_filter) -> None:
     """
-    Scan modules/ for flat modules and domain/submodule groups.
+    Scan modules/ for flat modules and domain/submodule groups,
+    then also discover installed plugin packages via entry points.
 
-    Logic per entry in modules/:
-      - Has register()  → flat legacy module, load directly (domain=None).
+    Logic per entry in modules/:\n      - Has register()  → flat legacy module, load directly (domain=None).
       - No register()   → domain namespace, scan one level deeper and load
                           each submodule with domain=<folder name>.
     """
@@ -81,6 +119,10 @@ def load_modules(bot_app, scheduler, authorized_filter) -> None:
                     domain=name,
                 )
 
+    # ── Plugin packages installed via /system install ─────────────────────────
+    _load_plugin_entrypoints(bot_app, scheduler, authorized_filter)
+
 
 def get_loaded() -> list[dict]:
     return _loaded
+

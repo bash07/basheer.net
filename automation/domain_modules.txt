@@ -1,0 +1,10 @@
+# Agentic Domain Modules
+# ─────────────────────────────────────────────────────────────────────────────
+# This file is managed automatically by the /system install <domain> command.
+# Each line is a pip-installable git URL for a domain package.
+# It is mounted into the container so installs persist across Docker rebuilds.
+#
+# Format: git+https://github.com/<org>/<repo>.git@<branch>
+# Example:
+#   git+https://github.com/bash07/automation-finance.git@main
+# ─────────────────────────────────────────────────────────────────────────────
