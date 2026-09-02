@@ -10,6 +10,7 @@ Jobs:
     6. Inserts new signals and sends Telegram alerts.
 """
 import asyncio
+import re
 import logging
 from datetime import datetime, timedelta
 
@@ -67,8 +68,9 @@ async def scan_signals_job() -> None:
             continue
 
         for sig_text in result.signals:
-            sig_type = _classify_signal_type(sig_text)
-            key = f"{entry.symbol}:{sig_type}:{sig_text[:60]}"
+            sig_type   = _classify_signal_type(sig_text)
+            stable_key = _stable_description(sig_text, sig_type)
+            key = f"{entry.symbol}:{sig_type}:{stable_key}"
             if key not in recent_keys:
                 new_signals.append({
                     "symbol":      entry.symbol,
@@ -103,10 +105,27 @@ async def scan_signals_job() -> None:
 
 def _classify_signal_type(description: str) -> str:
     desc = description.lower()
-    if "crossover" in desc: return "ema_crossover"
-    if "rsi"       in desc: return "rsi_extreme"
-    if "volume"    in desc: return "volume_spike"
+    if "crossover"  in desc: return "ema_crossover"
+    if "divergence" in desc: return "rsi_divergence"  # must come before generic "rsi" check
+    if "rsi"        in desc: return "rsi_extreme"
+    if "volume"     in desc: return "volume_spike"
     return "other"
+
+
+def _stable_description(description: str, sig_type: str) -> str:
+    """Return a dedup-stable version of the description by stripping volatile numbers.
+
+    RSI and volume signals embed live numeric values (e.g. "RSI OVERSOLD (24.3)",
+    "Volume spike (3.2× avg)") that fluctuate every 30-minute scan cycle.  Without
+    stripping them the dedup key changes every cycle, bypassing the window entirely.
+    """
+    if sig_type == "rsi_extreme":
+        # "RSI OVERSOLD (24.3)"  →  "RSI OVERSOLD"
+        return re.sub(r"\s*\([\d.]+\)", "", description).strip()
+    if sig_type == "volume_spike":
+        # "Volume spike (3.2× avg)"  →  "Volume spike"
+        return re.sub(r"\s*\([\d.]+.*?\)", "", description).strip()
+    return description[:60]
 
 
 def _batch_fetch(symbols: list[str]) -> dict:

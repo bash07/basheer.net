@@ -14,8 +14,9 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 _CROSSOVER_LOOKBACK   = 3    # candles to look back for crossover detection
-_DIVERGENCE_LOOKBACK  = 60   # candles scanned for RSI divergence peaks/troughs
-_DIVERGENCE_ORDER     = 5    # argrelextrema order — local extremum window half-width
+_DIVERGENCE_LOOKBACK  = 90   # candles scanned for RSI divergence peaks/troughs
+_DIVERGENCE_ORDER     = 3    # argrelextrema order — local extremum window half-width
+                              # (3 = trough needs 3 recovery candles each side on 1D chart)
 
 
 # ── Result types ──────────────────────────────────────────────────────────────
