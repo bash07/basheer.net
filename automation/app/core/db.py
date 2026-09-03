@@ -26,6 +26,16 @@ def init_db() -> None:
     """Create all tables. Call after importing all module models."""
     Base.metadata.create_all(bind=engine)
 
+    # Auto-migration: Add human_approved if missing on existing databases
+    from sqlalchemy import inspect, text
+    inspector = inspect(engine)
+    if "trade_signals" in inspector.get_table_names():
+        columns = [c["name"] for c in inspector.get_columns("trade_signals")]
+        if "human_approved" not in columns:
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE trade_signals ADD COLUMN human_approved BOOLEAN"))
+                conn.commit()
+
 
 @contextmanager
 def get_db() -> Session:
