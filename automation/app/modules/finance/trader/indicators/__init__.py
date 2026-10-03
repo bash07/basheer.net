@@ -5,6 +5,7 @@ they need via ``required_indicators``, and the engine computes only those,
 resolving inter-indicator dependencies automatically.
 
 Built-in indicators auto-register at import time from the sub-modules below.
+Supports dynamic parameterized indicators (e.g. ``ema_9``, ``sma_100``, ``rsi_21``, ``atr_20``).
 
 Adding a custom indicator
 -------------------------
@@ -13,28 +14,22 @@ decorator::
 
     from modules.finance.trader.indicators import register
 
-    @register("my_macd")
-    def my_macd(df_ltf, df_htf, cache):
-        close = df_ltf["Close"]
+    @register("my_indicator")
+    def my_indicator(df_ltf, df_htf, cache):
         ...
-        return macd_value
-
-    # With dependencies (cache["rsi_14"] already computed when my_fn runs):
-    @register("my_signal", deps=["rsi_14"])
-    def my_signal(df_ltf, df_htf, cache):
-        rsi = cache["rsi_14"]
-        ...
-        return signal_value
+        return value
 
 Built-in indicator keys
 -----------------------
-Price:
-    rsi_14          pd.Series   RSI-14 (Wilder EWM) on LTF close
-    ema_8           pd.Series   EMA-8 on LTF close
-    ema_21          pd.Series   EMA-21 on LTF close
-    ema_50          pd.Series   EMA-50 on LTF close
-    ema_200         pd.Series   EMA-200 on LTF close
-    atr_14          float       ATR-14 scalar (last bar)
+Price / Moving Averages:
+    rsi_14, rsi_<N>         pd.Series   RSI (Wilder EWM) on LTF close
+    ema_8, ema_21, ema_<N>  pd.Series   Exponential Moving Average
+    sma_20, sma_<N>         pd.Series   Simple Moving Average
+    atr_14, atr_<N>         float       Average True Range (last bar)
+    macd, macd_signal, macd_hist pd.Series MACD (12, 26, 9)
+    bb_upper, bb_lower, bb_mid, bb_width, bb_pct_b pd.Series Bollinger Bands
+    stoch_k, stoch_d        pd.Series   Stochastic Oscillator
+    adx, di_plus, di_minus  float/Series ADX & DMI Trend Strength
 
 Structure (SMC / ICT):
     structure       SwingStructure
@@ -48,16 +43,17 @@ Confluence:
     sr_levels       list[SRLevel]
 
 Bias:
-    bias            BiasResult            (uses _mode from cache)
-
-Private cache keys (set by compute_indicators caller):
-    _mode           str     "swing" | "intraday"
-    _category       str     watchlist category
+    bias            BiasResult (uses strategy preference or default)
+    bias_rsi        BiasResult (RSI regime + hidden divergence)
+    bias_macd       BiasResult (MACD trend & momentum)
+    bias_ema        BiasResult (EMA 20/50/200 stack alignment)
+    bias_composite  BiasResult (Consensus across multiple methods)
 """
 from __future__ import annotations
 
 import importlib
 import logging
+import re
 from typing import Callable
 
 logger = logging.getLogger(__name__)
@@ -76,17 +72,74 @@ def register(name: str, deps: list[str] | None = None):
         name: Unique indicator key (used in ``required_indicators``).
         deps: Other indicator keys that must be computed first.
               Their values will be in ``cache`` when your function runs.
-
-    Example::
-
-        @register("bos_list", deps=["structure"])
-        def _bos(df_ltf, df_htf, cache):
-            return detect_bos_choch(df_ltf, cache["structure"])
     """
     def decorator(fn: Callable) -> Callable:
         _REGISTRY[name] = (fn, list(deps) if deps else [])
         return fn
     return decorator
+
+
+# ── Dynamic Parameterized Indicator Resolution ───────────────────────────────
+
+def _resolve_dynamic(name: str) -> bool:
+    """Dynamically construct and register indicators matching patterns like ema_N, sma_N, rsi_N, atr_N."""
+    # EMA: ema_<int>
+    m = re.match(r"^ema_(\d+)$", name)
+    if m:
+        span = int(m.group(1))
+
+        @register(name)
+        def _dyn_ema(df_ltf, df_htf, cache, _span=span):
+            if name in df_ltf.columns:
+                return df_ltf[name]
+            return df_ltf["Close"].ewm(span=_span, adjust=False).mean()
+
+        return True
+
+    # SMA: sma_<int>
+    m = re.match(r"^sma_(\d+)$", name)
+    if m:
+        window = int(m.group(1))
+
+        @register(name)
+        def _dyn_sma(df_ltf, df_htf, cache, _w=window):
+            if name in df_ltf.columns:
+                return df_ltf[name]
+            return df_ltf["Close"].rolling(_w).mean()
+
+        return True
+
+    # RSI: rsi_<int>
+    m = re.match(r"^rsi_(\d+)$", name)
+    if m:
+        period = int(m.group(1))
+
+        @register(name)
+        def _dyn_rsi(df_ltf, df_htf, cache, _p=period):
+            if name in df_ltf.columns:
+                return df_ltf[name]
+            from .rsi import calc_rsi
+            return calc_rsi(df_ltf["Close"], _p)
+
+        return True
+
+    # ATR: atr_<int>
+    m = re.match(r"^atr_(\d+)$", name)
+    if m:
+        period = int(m.group(1))
+
+        @register(name)
+        def _dyn_atr(df_ltf, df_htf, cache, _p=period) -> float:
+            if name in df_ltf.columns:
+                val = df_ltf[name].iloc[-1]
+                if val == val:
+                    return float(val)
+            from .atr import calc_atr
+            return calc_atr(df_ltf, _p)
+
+        return True
+
+    return False
 
 
 # ── Public compute function ───────────────────────────────────────────────────
@@ -105,32 +158,47 @@ def compute_indicators(
         df_htf:        HTF OHLCV pd.DataFrame.
         initial_cache: Seed values. Use private keys like ``_mode`` and
                        ``_category`` to pass context that indicators need.
-                       Example: ``{"_mode": "swing", "_category": "us_stock"}``
 
     Returns:
         dict mapping indicator key -> computed value.
         Failed or unknown indicators map to ``None``.
     """
     cache: dict = dict(initial_cache) if initial_cache else {}
+    computing: set[str] = set()   # cycle detection
 
     def _compute_one(name: str) -> None:
         if name in cache:
             return                      # already computed (or seeded)
+        if name in computing:
+            raise RuntimeError(
+                f"[trader.indicators] Circular dependency detected for '{name}'. "
+                f"Currently computing: {computing}"
+            )
         entry = _REGISTRY.get(name)
+        if entry is None:
+            # Check dynamic resolvers for parameterized keys (ema_9, rsi_7, etc.)
+            if _resolve_dynamic(name):
+                entry = _REGISTRY.get(name)
+
         if entry is None:
             logger.warning("[trader.indicators] Unknown indicator: '%s'", name)
             cache[name] = None
             return
+
         fn, deps = entry
-        for dep in deps:               # depth-first dependency resolution
-            _compute_one(dep)
+        computing.add(name)
         try:
-            cache[name] = fn(df_ltf, df_htf, cache)
-        except Exception as exc:
-            logger.warning(
-                "[trader.indicators] Failed to compute '%s': %s", name, exc
-            )
-            cache[name] = None
+            for dep in deps:               # depth-first dependency resolution
+                _compute_one(dep)
+            try:
+                cache[name] = fn(df_ltf, df_htf, cache)
+            except Exception as exc:
+                logger.warning(
+                    "[trader.indicators] Failed to compute '%s': %s", name, exc
+                )
+                cache[name] = None
+        finally:
+            computing.discard(name)
 
     for key in needed:
         _compute_one(key)
@@ -141,15 +209,23 @@ def compute_indicators(
 # ── Helper for callers ────────────────────────────────────────────────────────
 
 def list_indicators() -> list[str]:
-    """Return all registered indicator names sorted alphabetically."""
+    """Return all currently registered indicator names sorted alphabetically.
+
+    Note:
+        Dynamic parameterized indicators (e.g. ``ema_9``, ``sma_100``, ``rsi_21``,
+        ``atr_20``) are constructed and added to the registry on-demand when requested
+        by a strategy's ``required_indicators``.
+    """
     return sorted(_REGISTRY.keys())
 
 
 # ── Auto-load built-in indicator modules ──────────────────────────────────────
-# Order does not matter — dependencies are resolved lazily.
 
 def _load_builtins() -> None:
-    _modules = ["rsi", "ema", "atr", "structure", "volume_profile", "bias_indicator"]
+    _modules = [
+        "rsi", "ema", "atr", "structure", "volume_profile", "bias_indicator",
+        "macd", "adx", "bollinger", "stochastic", "sma",
+    ]
     for mod_name in _modules:
         try:
             importlib.import_module(f".{mod_name}", package=__name__)

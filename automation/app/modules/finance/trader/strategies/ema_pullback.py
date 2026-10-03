@@ -28,12 +28,16 @@ class EMAPullbackStrategy(BaseStrategy):
     description = "EMA 8/21 pullback with hidden divergence HTF bias"
     setup_type = "continuation"
     priority = 40
+    required_indicators = [
+        "bias", "structure", "ema_8", "ema_21",
+        "atr_14", "volume_profile", "sr_levels",
+    ]
 
     def evaluate(self, ctx: StrategyContext) -> Optional[object]:
         from ..confluence import score_zone
         from ..schemas import TradeSetup, ConfluenceReport
         from ..setups import (
-            _MIN_SCORE, _calc_rr, _get_atr,
+            _MIN_SCORE, _calc_rr,
             _ema_pullback_triggered, _prev_swing_low_price, _prev_swing_high_price,
             _next_two_swing_highs, _next_two_swing_lows,
         )
@@ -47,12 +51,12 @@ class EMAPullbackStrategy(BaseStrategy):
 
         direction = "long" if "bull" in bias.bias else "short"
 
-        if not _ema_pullback_triggered(ctx.df_ltf, direction):
+        # Pass pre-computed EMA series — avoids recomputing inside the helper
+        if not _ema_pullback_triggered(ctx.df_ltf, direction, ema8=ctx.ema_8, ema21=ctx.ema_21):
             return None
 
-        close     = ctx.df_ltf["Close"]
-        ema21_val = float(close.ewm(span=21, adjust=False).mean().iloc[-1])
-        atr       = _get_atr(ctx.df_ltf)
+        ema21_val = float(ctx.ema_21.iloc[-1])   # use registry-computed series
+        atr       = ctx.atr_14
 
         entry_low  = min(ctx.current_price, ema21_val)
         entry_high = max(ctx.current_price, ema21_val)

@@ -22,16 +22,45 @@ from __future__ import annotations
 import json
 import os
 
-_CONFIG_PATH = os.path.join(os.path.dirname(__file__), ".trader_config.json")
+def get_config_path() -> str:
+    """Return the active path for trader_config.json.
+
+    Prioritises config.data_dir (e.g. /app/data inside Docker container)
+    for persistent storage across rebuilds, falling back to local module dir.
+    """
+    try:
+        from config import config
+        if config.data_dir and os.path.isdir(config.data_dir):
+            data_cfg = os.path.join(config.data_dir, "trader_config.json")
+            if os.path.exists(data_cfg):
+                return data_cfg
+            if os.access(config.data_dir, os.W_OK):
+                # Copy local default if exists
+                local_cfg = os.path.join(os.path.dirname(__file__), ".trader_config.json")
+                if os.path.exists(local_cfg):
+                    try:
+                        import shutil
+                        shutil.copy2(local_cfg, data_cfg)
+                        return data_cfg
+                    except Exception:
+                        pass
+                return data_cfg
+    except Exception:
+        pass
+    return os.path.join(os.path.dirname(__file__), ".trader_config.json")
+
+
+_CONFIG_PATH = get_config_path()
 
 
 # ── Config helpers ────────────────────────────────────────────────────────────
 
 def load_config() -> dict:
     """Load raw config dict from JSON. Returns empty dict if missing."""
-    if os.path.exists(_CONFIG_PATH):
+    cfg_path = get_config_path()
+    if os.path.exists(cfg_path):
         try:
-            with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+            with open(cfg_path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             pass
@@ -40,7 +69,12 @@ def load_config() -> dict:
 
 def save_config(config: dict) -> None:
     """Persist config dict to JSON (pretty-printed)."""
-    with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
+    cfg_path = get_config_path()
+    try:
+        os.makedirs(os.path.dirname(cfg_path), exist_ok=True)
+    except Exception:
+        pass
+    with open(cfg_path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
 
 

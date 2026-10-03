@@ -312,3 +312,201 @@ def _rsi(close, period: int = 14):
     avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
     rs = avg_gain / avg_loss.replace(0, float("inf"))
     return 100 - (100 / (1 + rs))
+
+
+# ── MACD Bias Provider ────────────────────────────────────────────────────────
+
+class MACDBiasProvider(BiasProvider):
+    """HTF Trend & Momentum bias from MACD (12, 26, 9).
+
+    Bias rules:
+      - strong_bull:   MACD > 0 and MACD > Signal and Histogram is expanding positive
+      - moderate_bull: MACD > Signal
+      - strong_bear:   MACD < 0 and MACD < Signal and Histogram is expanding negative
+      - moderate_bear: MACD < Signal
+      - neutral:       choppy / flat histogram near zero
+    """
+
+    def compute(self, df_htf, mode: str) -> BiasResult:
+        htf_tf, ltf_tf, vp_lookback = timeframes_for(mode)
+        close = df_htf["Close"]
+
+        if len(close) < 26:
+            return BiasResult(
+                mode=mode, htf_tf=htf_tf, ltf_tf=ltf_tf, vp_lookback=vp_lookback,
+                rsi_value=50.0, regime="neutral", hidden_div="none", failure_swing="none",
+                bias="neutral", bias_notes="Insufficient HTF bars for MACD",
+            )
+
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd_line = ema12 - ema26
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        hist = macd_line - signal_line
+
+        m_val = float(macd_line.iloc[-1])
+        s_val = float(signal_line.iloc[-1])
+        h_val = float(hist.iloc[-1])
+        prev_h = float(hist.iloc[-2]) if len(hist) > 1 else h_val
+
+        # Determine bias
+        if m_val > 0 and m_val > s_val and h_val > prev_h:
+            bias = "strong_bull"
+            notes = f"MACD ({m_val:.2f}) > Signal ({s_val:.2f}) above zero with expanding momentum"
+        elif m_val > s_val:
+            bias = "moderate_bull"
+            notes = f"MACD ({m_val:.2f}) > Signal ({s_val:.2f}) — moderate bullish momentum"
+        elif m_val < 0 and m_val < s_val and h_val < prev_h:
+            bias = "strong_bear"
+            notes = f"MACD ({m_val:.2f}) < Signal ({s_val:.2f}) below zero with expanding downward momentum"
+        elif m_val < s_val:
+            bias = "moderate_bear"
+            notes = f"MACD ({m_val:.2f}) < Signal ({s_val:.2f}) — moderate bearish momentum"
+        else:
+            bias = "neutral"
+            notes = "MACD histogram near zero / converging"
+
+        regime = "bull" if m_val > s_val else ("bear" if m_val < s_val else "neutral")
+
+        return BiasResult(
+            mode=mode,
+            htf_tf=htf_tf,
+            ltf_tf=ltf_tf,
+            vp_lookback=vp_lookback,
+            rsi_value=round(m_val, 2),  # store macd value in indicator field
+            regime=regime,
+            hidden_div="none",
+            failure_swing="none",
+            bias=bias,
+            bias_notes=notes,
+        )
+
+
+# ── EMA Trend Bias Provider ───────────────────────────────────────────────────
+
+class EMABiasProvider(BiasProvider):
+    """HTF Trend alignment bias from EMA 20, 50, and 200.
+
+    Bias rules:
+      - strong_bull:   Price > EMA 20 > EMA 50 > EMA 200 (bullish stack)
+      - moderate_bull: Price > EMA 50 and EMA 20 > EMA 50
+      - strong_bear:   Price < EMA 20 < EMA 50 < EMA 200 (bearish stack)
+      - moderate_bear: Price < EMA 50 and EMA 20 < EMA 50
+      - neutral:       choppy / conflicting EMA sequence
+    """
+
+    def compute(self, df_htf, mode: str) -> BiasResult:
+        htf_tf, ltf_tf, vp_lookback = timeframes_for(mode)
+        close = df_htf["Close"]
+
+        if len(close) < 20:
+            return BiasResult(
+                mode=mode, htf_tf=htf_tf, ltf_tf=ltf_tf, vp_lookback=vp_lookback,
+                rsi_value=50.0, regime="neutral", hidden_div="none", failure_swing="none",
+                bias="neutral", bias_notes="Insufficient HTF bars for EMA bias",
+            )
+
+        c = float(close.iloc[-1])
+        e20 = float(close.ewm(span=20, adjust=False).mean().iloc[-1])
+        e50 = float(close.ewm(span=50, adjust=False).mean().iloc[-1]) if len(close) >= 50 else e20
+        e200 = float(close.ewm(span=200, adjust=False).mean().iloc[-1]) if len(close) >= 100 else e50
+
+        if c > e20 > e50 >= e200:
+            bias = "strong_bull"
+            notes = f"Bullish EMA alignment: Price ({c:.2f}) > EMA20 ({e20:.2f}) > EMA50 ({e50:.2f})"
+            regime = "bull"
+        elif c > e50 and e20 > e50:
+            bias = "moderate_bull"
+            notes = f"Moderate bull trend: Price ({c:.2f}) and EMA20 > EMA50 ({e50:.2f})"
+            regime = "bull"
+        elif c < e20 < e50 <= e200:
+            bias = "strong_bear"
+            notes = f"Bearish EMA alignment: Price ({c:.2f}) < EMA20 ({e20:.2f}) < EMA50 ({e50:.2f})"
+            regime = "bear"
+        elif c < e50 and e20 < e50:
+            bias = "moderate_bear"
+            notes = f"Moderate bear trend: Price ({c:.2f}) and EMA20 < EMA50 ({e50:.2f})"
+            regime = "bear"
+        else:
+            bias = "neutral"
+            notes = f"EMAs converging or mixed: Price ({c:.2f}), EMA20 ({e20:.2f}), EMA50 ({e50:.2f})"
+            regime = "neutral"
+
+        return BiasResult(
+            mode=mode,
+            htf_tf=htf_tf,
+            ltf_tf=ltf_tf,
+            vp_lookback=vp_lookback,
+            rsi_value=round(e20, 2),
+            regime=regime,
+            hidden_div="none",
+            failure_swing="none",
+            bias=bias,
+            bias_notes=notes,
+        )
+
+
+# ── Composite Consensus Bias Provider ─────────────────────────────────────────
+
+class CompositeBiasProvider(BiasProvider):
+    """Combines RSI regime + MACD + EMA trend into a composite consensus score."""
+
+    def __init__(self) -> None:
+        self.rsi_provider = RSIBiasProvider()
+        self.macd_provider = MACDBiasProvider()
+        self.ema_provider = EMABiasProvider()
+
+    def compute(self, df_htf, mode: str) -> BiasResult:
+        res_rsi = self.rsi_provider.compute(df_htf, mode)
+        res_macd = self.macd_provider.compute(df_htf, mode)
+        res_ema = self.ema_provider.compute(df_htf, mode)
+
+        # Score weights: +2 for strong_bull, +1 for moderate_bull, -2 for strong_bear, -1 for moderate_bear
+        scores = {
+            "strong_bull": 2, "moderate_bull": 1,
+            "neutral": 0,
+            "moderate_bear": -1, "strong_bear": -2,
+        }
+        total = scores.get(res_rsi.bias, 0) + scores.get(res_macd.bias, 0) + scores.get(res_ema.bias, 0)
+
+        if total >= 4:
+            bias = "strong_bull"
+        elif total >= 2:
+            bias = "moderate_bull"
+        elif total <= -4:
+            bias = "strong_bear"
+        elif total <= -2:
+            bias = "moderate_bear"
+        else:
+            bias = "neutral"
+
+        notes = (
+            f"Consensus score {total}/6 — RSI: {res_rsi.bias}, "
+            f"MACD: {res_macd.bias}, EMA: {res_ema.bias}"
+        )
+
+        regime = "bull" if total > 0 else ("bear" if total < 0 else "neutral")
+
+        return BiasResult(
+            mode=mode,
+            htf_tf=res_rsi.htf_tf,
+            ltf_tf=res_rsi.ltf_tf,
+            vp_lookback=res_rsi.vp_lookback,
+            rsi_value=res_rsi.rsi_value,
+            regime=regime,
+            hidden_div=res_rsi.hidden_div,
+            failure_swing="none",
+            bias=bias,
+            bias_notes=notes,
+        )
+
+
+# Register all built-in providers
+register_bias_provider("macd", MACDBiasProvider())
+register_bias_provider("ema", EMABiasProvider())
+register_bias_provider("composite", CompositeBiasProvider())
+
+
+def list_bias_providers() -> list[str]:
+    """Return all registered BiasProvider keys."""
+    return sorted(_BIAS_PROVIDERS.keys())

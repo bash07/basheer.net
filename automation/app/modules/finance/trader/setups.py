@@ -56,56 +56,66 @@ def check_all(
 ) -> list:
     """Run all enabled strategies for a ticker and return valid TradeSetup objects.
 
-    Orchestrates the pipeline:
-      1. Compute HTF bias (shared across all strategies)
-      2. Run LTF scanner (structure, BOS, OBs, FVGs, liquidity)
-      3. Compute Volume Profile + S/R levels
-      4. Build a StrategyContext with all pre-computed data
-      5. Evaluate each enabled strategy against the context
+    Phase 1 implementation — indicator-registry pipeline:
+
+      1. Collect the union of ``required_indicators`` from all enabled strategies.
+      2. Call ``compute_indicators()`` — only the needed indicators are computed
+         (with dependency resolution handled automatically).
+      3. Early-exit if bias is neutral (saves all subsequent computation).
+      4. Build a ``StrategyContext`` backed by the indicators dict.
+      5. Evaluate each enabled strategy against the shared context.
     """
     from .schemas import scan_mode_for
-    from .bias import compute_htf_bias
-    from .scanner import (
-        detect_structure, detect_bos_choch, find_order_blocks,
-        find_fvg, find_eqh_eql,
-    )
-    from .confluence import compute_volume_profile, get_sr_levels
+    from .indicators import compute_indicators
     from .strategies import get_all_strategies
     from .strategies.base import StrategyContext
 
     mode = scan_mode_for(category)
 
-    # ── Bias ──────────────────────────────────────────────────────────────────
+    # Identify enabled strategies
+    enabled = [
+        s for s in get_all_strategies()
+        if s.name not in DISABLED_SETUPS
+    ]
+    if not enabled:
+        logger.debug("[trader.setups] %s: all strategies disabled — skipping", ticker)
+        return []
+
+    # Collect the union of all required indicators
+    needed: set[str] = set()
+    for s in enabled:
+        needed.update(s.required_indicators)
+        # If strategy uses a non-default bias provider (e.g. macd, ema, composite)
+        bp = getattr(s, "bias_provider", "rsi")
+        if bp != "rsi":
+            needed.add(f"bias_{bp}")
+
+    # Include default bias if needed by any strategy
+    if any("bias" in s.required_indicators for s in enabled):
+        needed.add("bias")
+
+    # Compute only what is needed, with automatic dependency resolution
+    initial_cache = {"_mode": mode, "_category": category}
     try:
-        bias = compute_htf_bias(df_htf, mode)
+        indicators = compute_indicators(list(needed), df_ltf, df_htf, initial_cache)
     except Exception as e:
-        logger.warning("[trader.setups] bias computation failed for %s: %s", ticker, e)
+        logger.warning("[trader.setups] Indicator computation failed for %s: %s", ticker, e)
         return []
 
-    if bias.bias == "neutral":
-        logger.debug("[trader.setups] %s: neutral bias — skipping all strategies", ticker)
+    # Helper to check if a specific strategy has neutral / missing directional bias
+    def _strategy_bias_is_neutral(strategy) -> bool:
+        if not getattr(strategy, "requires_directional_bias", True):
+            return False  # Non-directional / range strategies don't require trend bias
+        bp = getattr(strategy, "bias_provider", "rsi")
+        b = indicators.get(f"bias_{bp}") if bp != "rsi" else indicators.get("bias")
+        return b is None or b.bias == "neutral"
+
+    # Early exit only if EVERY enabled strategy has a neutral / invalid bias
+    if all(_strategy_bias_is_neutral(s) for s in enabled):
+        logger.debug("[trader.setups] %s: all strategy biases are neutral — skipping", ticker)
         return []
 
-    # ── Trading Scanner ───────────────────────────────────────────────────────
-    try:
-        structure = detect_structure(df_ltf)
-        bos_list  = detect_bos_choch(df_ltf, structure)
-        ob_list   = find_order_blocks(df_ltf, bos_list)
-        fvg_list  = find_fvg(df_ltf)
-        liq_list  = find_eqh_eql(df_ltf)
-    except Exception as e:
-        logger.warning("[trader.setups] scanner failed for %s: %s", ticker, e)
-        return []
-
-    # ── Volume Profile + S/R ──────────────────────────────────────────────────
-    try:
-        vp      = compute_volume_profile(df_ltf, bias.vp_lookback)
-        sr_lvls = get_sr_levels(df_ltf, df_htf, float(df_ltf["Close"].iloc[-1]))
-    except Exception as e:
-        logger.warning("[trader.setups] confluence prep failed for %s: %s", ticker, e)
-        return []
-
-    # ── Build shared context ──────────────────────────────────────────────────
+    # Build shared context
     ctx = StrategyContext(
         ticker=ticker,
         category=category,
@@ -113,23 +123,18 @@ def check_all(
         current_price=float(df_ltf["Close"].iloc[-1]),
         df_htf=df_htf,
         df_ltf=df_ltf,
-        bias=bias,
-        structure=structure,
-        bos_list=bos_list,
-        ob_list=ob_list,
-        fvg_list=fvg_list,
-        liq_list=liq_list,
-        volume_profile=vp,
-        sr_levels=sr_lvls,
+        indicators=indicators,
     )
 
-    # ── Evaluate each strategy ────────────────────────────────────────────────
+    # Evaluate each enabled strategy
     results = []
-    for strategy in get_all_strategies():
-        if strategy.name in DISABLED_SETUPS:
-            logger.debug("[trader.setups] %s: '%s' is disabled — skipping",
+    for strategy in enabled:
+        if _strategy_bias_is_neutral(strategy):
+            logger.debug("[trader.setups] %s: '%s' bias is neutral — skipping",
                          ticker, strategy.name)
             continue
+
+        ctx.bind_strategy(strategy)
         try:
             setup = strategy.evaluate(ctx)
             if setup is not None:
@@ -603,7 +608,12 @@ def _get_atr(df, period: int = 14) -> float:
 
 # ── Setup 4 helper functions ───────────────────────────────────────────────
 
-def _ema_pullback_triggered(df_ltf, direction: str) -> bool:
+def _ema_pullback_triggered(
+    df_ltf,
+    direction: str,
+    ema8=None,
+    ema21=None,
+) -> bool:
     """Return True if the last bar shows an EMA pullback entry signal.
 
     LONG triggers (either is sufficient):
@@ -613,12 +623,19 @@ def _ema_pullback_triggered(df_ltf, direction: str) -> bool:
     SHORT triggers (either is sufficient):
       1. Rejection wick:  bar HIGH ≥ 21 EMA  AND  bar CLOSE < 21 EMA
       2. Bearish cross:   8 EMA crossed below 21 EMA in the last 5 bars
+
+    Args:
+        df_ltf:    LTF OHLCV DataFrame.
+        direction: ``"long"`` or ``"short"``.
+        ema8:      Optional pre-computed EMA-8 pd.Series (avoids re-computation).
+        ema21:     Optional pre-computed EMA-21 pd.Series (avoids re-computation).
     """
     close = df_ltf["Close"]
     high  = df_ltf["High"]
     low   = df_ltf["Low"]
-    ema8  = close.ewm(span=8,  adjust=False).mean()
-    ema21 = close.ewm(span=21, adjust=False).mean()
+    # Use pre-computed series if provided, otherwise compute fresh
+    ema8  = ema8  if ema8  is not None else close.ewm(span=8,  adjust=False).mean()
+    ema21 = ema21 if ema21 is not None else close.ewm(span=21, adjust=False).mean()
 
     e21        = float(ema21.iloc[-1])
     last_close = float(close.iloc[-1])

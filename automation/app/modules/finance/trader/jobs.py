@@ -195,7 +195,7 @@ async def scan_all_tickers() -> None:
 # ── OHLCV fetching ────────────────────────────────────────────────────────────
 
 def _fetch_all_ohlcv(entries: list, mode: str) -> dict:
-    """Fetch HTF + LTF OHLCV for all entries using the configured DataProvider.
+    """Fetch HTF + LTF OHLCV for all entries using category-aware DataProviders.
 
     Returns:
         Dict with keys "{symbol}:htf" and "{symbol}:ltf" → DataFrame
@@ -207,48 +207,35 @@ def _fetch_all_ohlcv(entries: list, mode: str) -> dict:
         return {}
 
     htf_tf, ltf_tf, _ = timeframes_for(mode)
-    provider = get_provider()
-    symbols = [e.symbol for e in entries]
 
-    # yfinance periods for each TF
-    _PERIODS = {
-        "1wk": "2y",
-        "1d":  "1y",
-        "4h":  "60d",
-        "1h":  "30d",
-    }
-
-    htf_period = _PERIODS.get(htf_tf, "1y")
-    ltf_period = _PERIODS.get(ltf_tf, "30d")
-    # yfinance doesn't support 4h; fetch 1h and resample
-    ltf_fetch_interval = "1h" if ltf_tf == "4h" else ltf_tf
-    ltf_resample = "4h" if ltf_tf == "4h" else None
+    # Group symbols by category so appropriate provider is used (e.g. Binance for crypto)
+    by_category: dict[str, list[str]] = {}
+    for e in entries:
+        by_category.setdefault(getattr(e, "category", "default"), []).append(e.symbol)
 
     result = {}
-    htf_map = provider.fetch_ohlcv_batch(symbols, htf_tf, period=htf_period)
-    ltf_map = provider.fetch_ohlcv_batch(symbols, ltf_fetch_interval, period=ltf_period,
-                                         resample_to=ltf_resample)
+    for cat, symbols in by_category.items():
+        provider = get_provider(cat)
+        htf_map = provider.fetch_ohlcv_batch(symbols, htf_tf)
+        ltf_map = provider.fetch_ohlcv_batch(symbols, ltf_tf)
 
-    for sym in symbols:
-        if sym in htf_map:
-            result[f"{sym}:htf"] = htf_map[sym]
-        if sym in ltf_map:
-            result[f"{sym}:ltf"] = ltf_map[sym]
+        for sym in symbols:
+            if sym in htf_map:
+                result[f"{sym}:htf"] = htf_map[sym]
+            if sym in ltf_map:
+                result[f"{sym}:ltf"] = ltf_map[sym]
 
     return result
 
 
-# NOTE: _fetch_tf_batch is kept below for reference; all active fetching now
-# goes through DataProvider.fetch_ohlcv_batch() via _fetch_all_ohlcv above.
 def _fetch_tf_batch(symbols: list, period: str, interval: str, tf_label: str,
                     result: dict, cache_key_suffix: str, resample_to: str | None = None) -> None:
-    """Deprecated: use get_provider().fetch_ohlcv_batch() instead."""
-    import warnings
-    warnings.warn(
-        "_fetch_tf_batch is deprecated; use get_provider().fetch_ohlcv_batch()",
-        DeprecationWarning,
-        stacklevel=2,
-    )
+    """Legacy helper: delegates to get_provider().fetch_ohlcv_batch()."""
+    from .data import get_provider
+    provider = get_provider()
+    batch_res = provider.fetch_ohlcv_batch(symbols, interval, period=period, resample_to=resample_to)
+    for sym, df in batch_res.items():
+        result[f"{sym}:{cache_key_suffix}"] = df
 
 
 def _update_open_trades_for_ticker(ticker: str, ltf_df, db) -> None:

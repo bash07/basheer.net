@@ -69,7 +69,7 @@ async def _scan_single(ticker: str) -> str:
     from modules.finance.watchlist.models import WatchlistEntry
     from .schemas import scan_mode_for, timeframes_for
     from .setups import check_all
-    from .jobs import _fetch_tf_batch
+    from .data import get_provider
 
     # Look up category from watchlist
     with get_db() as db:
@@ -86,23 +86,14 @@ async def _scan_single(ticker: str) -> str:
     mode = scan_mode_for(entry.category)
     htf_tf, ltf_tf, _ = timeframes_for(mode)
 
-    # Fetch OHLCV
-    ohlcv: dict = {}
+    # Fetch OHLCV via configured DataProvider for this category
+    provider = get_provider(entry.category)
     loop = asyncio.get_event_loop()
-    from .jobs import _OHLCV_PARAMS
-    htf_period, htf_interval = _OHLCV_PARAMS[htf_tf]
-    ltf_period, ltf_interval = _OHLCV_PARAMS[ltf_tf]
 
-    await loop.run_in_executor(
-        None, _fetch_tf_batch, [ticker], htf_period, htf_interval, htf_tf, ohlcv, "htf", None
+    htf_df, ltf_df = await asyncio.gather(
+        loop.run_in_executor(None, provider.fetch_ohlcv, ticker, htf_tf),
+        loop.run_in_executor(None, provider.fetch_ohlcv, ticker, ltf_tf),
     )
-    await loop.run_in_executor(
-        None, _fetch_tf_batch, [ticker], ltf_period, ltf_interval, ltf_tf, ohlcv, "ltf",
-        "4h" if mode == "swing" else None
-    )
-
-    htf_df = ohlcv.get(f"{ticker}:htf")
-    ltf_df = ohlcv.get(f"{ticker}:ltf")
 
     if htf_df is None or ltf_df is None or htf_df.empty or ltf_df.empty:
         return f"❌ Could not fetch OHLCV data for `{ticker}`\\. Try again in a moment\\."
@@ -221,15 +212,12 @@ async def traderbias_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         mode   = scan_mode_for(entry.category)
         htf_tf, _, _ = timeframes_for(mode)
-        htf_period, htf_interval = _OHLCV_PARAMS[htf_tf]
 
-        ohlcv: dict = {}
+        from .data import get_provider
+        provider = get_provider(entry.category)
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            None, _fetch_tf_batch, [ticker], htf_period, htf_interval, htf_tf, ohlcv, "htf", None
-        )
+        htf_df = await loop.run_in_executor(None, provider.fetch_ohlcv, ticker, htf_tf)
 
-        htf_df = ohlcv.get(f"{ticker}:htf")
         if htf_df is None or htf_df.empty:
             await msg.edit_text(f"❌ Could not fetch HTF data for `{ticker}`\\.", parse_mode="Markdown")
             return
@@ -313,19 +301,15 @@ async def confluence_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         mode          = scan_mode_for(entry.category)
         htf_tf, ltf_tf, vp_lookback = timeframes_for(mode)
-        htf_period, htf_interval = _OHLCV_PARAMS[htf_tf]
-        ltf_period, ltf_interval = _OHLCV_PARAMS[ltf_tf]
 
-        ohlcv: dict = {}
+        from .data import get_provider
+        provider = get_provider(entry.category)
         loop = asyncio.get_event_loop()
-        await asyncio.gather(
-            loop.run_in_executor(None, _fetch_tf_batch, [ticker], htf_period, htf_interval, htf_tf, ohlcv, "htf", None),
-            loop.run_in_executor(None, _fetch_tf_batch, [ticker], ltf_period, ltf_interval, ltf_tf, ohlcv, "ltf",
-                                 "4h" if mode == "swing" else None),
-        )
 
-        htf_df = ohlcv.get(f"{ticker}:htf")
-        ltf_df = ohlcv.get(f"{ticker}:ltf")
+        htf_df, ltf_df = await asyncio.gather(
+            loop.run_in_executor(None, provider.fetch_ohlcv, ticker, htf_tf),
+            loop.run_in_executor(None, provider.fetch_ohlcv, ticker, ltf_tf),
+        )
 
         if ltf_df is None or ltf_df.empty:
             await msg.edit_text(f"❌ Could not fetch LTF data for `{ticker}`\\.", parse_mode="Markdown")

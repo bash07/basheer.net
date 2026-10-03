@@ -26,11 +26,15 @@ class DisplacementFVGStrategy(BaseStrategy):
     description = "Strong displacement candle followed by FVG fill"
     setup_type = "continuation"
     priority = 30
+    required_indicators = [
+        "bias", "structure", "fvg_list",
+        "volume_profile", "sr_levels", "atr_14",
+    ]
 
     def evaluate(self, ctx: StrategyContext) -> Optional[object]:
         from ..confluence import score_zone
         from ..schemas import TradeSetup, ConfluenceReport
-        from ..setups import _MIN_SCORE, _calc_rr, _get_atr, _next_swing_high, _next_swing_low
+        from ..setups import _MIN_SCORE, _calc_rr, _next_swing_high, _next_swing_low
 
         bias = ctx.bias
         if bias.bias == "neutral":
@@ -57,7 +61,7 @@ class DisplacementFVGStrategy(BaseStrategy):
         entry_low  = fvg.gap_low
         entry_high = fvg.gap_high
         entry_mid  = fvg.midpoint
-        atr = _get_atr(ctx.df_ltf)
+        atr = ctx.atr_14
 
         if direction == "long":
             stop_loss   = fvg.gap_low - (atr * 0.5)

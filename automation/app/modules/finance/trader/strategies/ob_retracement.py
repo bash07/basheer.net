@@ -27,11 +27,15 @@ class OBRetracementStrategy(BaseStrategy):
     description = "BOS + Order Block retracement entry"
     setup_type = "continuation"
     priority = 10
+    required_indicators = [
+        "bias", "structure", "bos_list", "ob_list", "liq_list",
+        "volume_profile", "sr_levels", "atr_14",
+    ]
 
     def evaluate(self, ctx: StrategyContext) -> Optional[object]:
         from ..confluence import score_zone
         from ..schemas import TradeSetup
-        from ..setups import _MIN_SCORE, _calc_rr, _get_atr, _next_swing_high, _next_swing_low, _next_eqh, _next_eql
+        from ..setups import _MIN_SCORE, _calc_rr, _next_swing_high, _next_swing_low, _next_eqh, _next_eql
 
         bias = ctx.bias
         if bias.bias not in ("strong_bull", "strong_bear"):
@@ -65,7 +69,7 @@ class OBRetracementStrategy(BaseStrategy):
         entry_low  = ob.zone_low
         entry_high = ob.zone_high
         entry_mid  = ob.midpoint
-        atr = _get_atr(ctx.df_ltf)
+        atr = ctx.atr_14
 
         if direction == "long":
             stop_loss   = ob.zone_low - (atr * 0.5)

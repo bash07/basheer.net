@@ -26,11 +26,15 @@ class LiquiditySweepFVGStrategy(BaseStrategy):
     description = "Liquidity sweep followed by FVG re-entry"
     setup_type = "continuation"
     priority = 20
+    required_indicators = [
+        "bias", "fvg_list", "liq_list",
+        "volume_profile", "sr_levels", "atr_14",
+    ]
 
     def evaluate(self, ctx: StrategyContext) -> Optional[object]:
         from ..confluence import score_zone
         from ..schemas import TradeSetup
-        from ..setups import _MIN_SCORE, _calc_rr, _get_atr, _next_swing_high, _next_swing_low, _next_eqh, _next_eql
+        from ..setups import _MIN_SCORE, _calc_rr, _next_swing_high, _next_swing_low, _next_eqh, _next_eql
 
         bias = ctx.bias
         if bias.bias not in ("strong_bull", "strong_bear"):
@@ -67,7 +71,7 @@ class LiquiditySweepFVGStrategy(BaseStrategy):
         entry_low  = fvg.gap_low
         entry_high = fvg.gap_high
         entry_mid  = fvg.midpoint
-        atr = _get_atr(ctx.df_ltf)
+        atr = ctx.atr_14
 
         if direction == "long":
             stop_loss   = recent_sweep.price - (atr * 0.5)

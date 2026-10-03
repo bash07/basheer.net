@@ -48,7 +48,7 @@ import io
 import logging
 import sys
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 # Force UTF-8 output on Windows to avoid cp1252 crashes
@@ -164,7 +164,7 @@ def run_backtest(
             print(f"Disabled setups: {', '.join(disabled_setups_list)}")
         print()
         print("Loading historical data ...")
-        full_ltf, full_htf = _download_full_history(ticker, mode, date_from, date_to)
+        full_ltf, full_htf = _download_full_history(ticker, mode, date_from, date_to, category=category)
 
         if full_ltf is None or full_ltf.empty:
             print("[ERROR] No LTF data available.")
@@ -370,7 +370,13 @@ def _evaluate_outcome(setup, future_bars) -> tuple[str, int, float]:
 # Data Download
 # ---------------------------------------------------------------------------
 
-def _download_full_history(ticker: str, mode: str, date_from: date, date_to: date):
+def _download_full_history(
+    ticker: str,
+    mode: str,
+    date_from: date,
+    date_to: date,
+    category: Optional[str] = None,
+):
     """Download HTF + LTF history respecting yfinance interval limits.
 
     yfinance hard limits:
@@ -435,27 +441,16 @@ def _download_full_history(ticker: str, mode: str, date_from: date, date_to: dat
                 logger.debug("Failed to load cache %s: %s", cache_file, e)
                 # Fall through to download
 
-        # 2. Not in cache (or cache corrupt) — download from yfinance
+        # 2. Not in cache (or cache corrupt) — download via DataProvider
         try:
-            df = yf.download(
-                tickers=ticker,
-                start=str(start),
-                end=str(end),
-                interval=interval,
-                progress=False,
-                auto_adjust=True,
-                multi_level_index=False,   # yfinance >=0.2.38: flat columns
-            )
-        except TypeError:
-            # Older yfinance without multi_level_index kwarg
-            df = yf.download(
-                tickers=ticker,
-                start=str(start),
-                end=str(end),
-                interval=interval,
-                progress=False,
-                auto_adjust=True,
-            )
+            from modules.finance.trader.data import get_provider
+            provider = get_provider(category)
+            start_dt = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
+            end_dt   = datetime.combine(end, datetime.min.time(), tzinfo=timezone.utc)
+            df = provider.fetch_ohlcv(ticker, interval=interval, start=start_dt, end=end_dt)
+        except Exception as e:
+            logger.error("[backtest] DataProvider fetch failed for %s (%s): %s", ticker, interval, e)
+            df = None
 
         if df is None or df.empty:
             print(f"[ERROR] No {label} data returned ({ticker} {interval}).")
