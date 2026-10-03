@@ -69,6 +69,15 @@ class TestWatchCommandNoArgs:
         update.message.reply_text.assert_called_once()
         assert "Usage" in update.message.reply_text.call_args[0][0]
 
+    async def test_chart_no_args(self, make_update):
+        update, context = make_update(args=[])
+        from modules.finance.technical.commands import chart_command
+        await chart_command(update, context)
+
+        update.message.reply_text.assert_called_once()
+        assert "Usage" in update.message.reply_text.call_args[0][0]
+
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Pattern 2 — External dependency mocking (yfinance)
@@ -340,3 +349,65 @@ class TestTACommands:
         sent_msg = update.message.reply_text.return_value
         sent_msg.edit_text.assert_called_once()
         assert "❌" in sent_msg.edit_text.call_args[0][0]
+
+    async def test_chart_command_sends_photo(self, make_update, sample_ohlcv, tmp_path):
+        result = self._make_ta_result(sample_ohlcv)
+        fake_png = str(tmp_path / "chart.png")
+        with open(fake_png, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20)
+
+        update, context = make_update(args=["TEST", "--tf", "1wk"])
+
+        with patch(
+            "modules.finance.technical.charts.fetch_and_render",
+            new=AsyncMock(return_value=(fake_png, result)),
+        ):
+            from modules.finance.technical.commands import chart_command
+            await chart_command(update, context)
+
+        update.message.reply_photo.assert_called_once()
+        caption = update.message.reply_photo.call_args[1]["caption"]
+        assert "TEST" in caption
+        assert "1WK" in caption
+
+    async def test_chart_command_handles_bad_ticker(self, make_update):
+        update, context = make_update(args=["BADTICKER"])
+
+        with patch(
+            "modules.finance.technical.charts.fetch_and_render",
+            new=AsyncMock(side_effect=ValueError("No data returned for 'BADTICKER'.")),
+        ):
+            from modules.finance.technical.commands import chart_command
+            await chart_command(update, context)
+
+        sent_msg = update.message.reply_text.return_value
+        sent_msg.edit_text.assert_called_once()
+        assert "❌" in sent_msg.edit_text.call_args[0][0]
+
+    async def test_signals_command_empty(self, make_update, clean_db):
+        update, context = make_update(args=[])
+        from modules.finance.technical.commands import signals_command
+        await signals_command(update, context)
+
+        update.message.reply_text.assert_called_once()
+        assert "No signals detected yet" in update.message.reply_text.call_args[0][0]
+
+    async def test_signals_command_with_history(self, make_update, clean_db):
+        from modules.finance.technical.models import SignalLog
+        clean_db.add(SignalLog(
+            symbol="BTC-USD",
+            signal_type="ema_crossover",
+            description="Bullish crossover: EMA21 above EMA50",
+            notified=True,
+        ))
+        clean_db.commit()
+
+        update, context = make_update(args=[])
+        from modules.finance.technical.commands import signals_command
+        await signals_command(update, context)
+
+        update.message.reply_text.assert_called_once()
+        text = update.message.reply_text.call_args[0][0]
+        assert "BTC-USD" in text
+        assert "Bullish crossover" in text
+

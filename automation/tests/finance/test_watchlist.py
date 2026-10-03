@@ -149,3 +149,43 @@ class TestPriceAlertDB:
             select(PriceAlert).where(PriceAlert.symbol == "BTC-USD")
         ).scalar_one()
         assert result.triggered is True
+
+
+class TestDailySummaryJob:
+    async def test_skips_when_empty_watchlist(self, clean_db):
+        from unittest.mock import AsyncMock, patch
+        from modules.finance.watchlist.jobs import daily_summary_job
+
+        with patch("modules.finance._shared.notify.notify", new=AsyncMock()) as mock_notify:
+            await daily_summary_job()
+            mock_notify.assert_not_called()
+
+    async def test_includes_prices_and_recent_ta_signals(self, clean_db):
+        from unittest.mock import AsyncMock, patch
+        from modules.finance.watchlist.models import WatchlistEntry
+        from modules.finance.technical.models import SignalLog
+        from modules.finance.watchlist.jobs import daily_summary_job
+
+        clean_db.add(WatchlistEntry(symbol="AAPL", display_name="Apple Inc.", category="us_stock"))
+        clean_db.add(SignalLog(
+            symbol="AAPL",
+            signal_type="rsi_divergence",
+            description="🟢 RSI Bullish Divergence (price lower low, RSI higher low)",
+            notified=True,
+        ))
+        clean_db.commit()
+
+        fake_prices = {
+            "AAPL": {"price": 185.5, "change_pct": 1.2, "day_high": 186.0, "day_low": 184.0}
+        }
+
+        with patch("modules.finance.watchlist.prices.fetch_prices_batch", return_value=fake_prices):
+            with patch("modules.finance._shared.notify.notify", new=AsyncMock()) as mock_notify:
+                await daily_summary_job()
+                mock_notify.assert_called_once()
+                msg = mock_notify.call_args[0][0]
+                assert "Morning Briefing" in msg
+                assert "AAPL" in msg
+                assert "Technical Signals (Last 24h)" in msg
+                assert "RSI Bullish Divergence" in msg
+

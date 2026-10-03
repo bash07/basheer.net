@@ -6,7 +6,7 @@ Jobs:
 """
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,31 @@ async def daily_summary_job() -> None:
         for sym in symbols:
             lines.append(format_price_row(sym, prices.get(sym)))
         lines.append("")
+
+    # Append recent technical signals from the last 24 hours
+    try:
+        from modules.finance.technical.models import SignalLog
+        cutoff_ta = datetime.now(timezone.utc) - timedelta(hours=24)
+        with get_db() as db:
+            recent_ta = db.execute(
+                select(SignalLog)
+                .where(SignalLog.detected_at >= cutoff_ta)
+                .order_by(SignalLog.detected_at.desc())
+            ).scalars().all()
+
+        if recent_ta:
+            lines.append("⚡ *Technical Signals (Last 24h)*")
+            seen_ta = set()
+            for s in recent_ta:
+                key = f"{s.symbol}:{s.description[:40]}"
+                if key not in seen_ta:
+                    seen_ta.add(key)
+                    lines.append(f"• *{s.symbol}* — {s.description}")
+            lines.append("")
+        else:
+            lines.append("⚡ *Technical Signals:* No active alerts in the last 24h\n")
+    except Exception as e:
+        logger.warning("[watchlist] daily_summary: failed to query TA signals: %s", e)
 
     await notify("\n".join(lines).strip(), parse_mode="Markdown")
     logger.info("[watchlist] Daily summary sent (%d tickers)", len(rows))

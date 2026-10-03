@@ -12,7 +12,7 @@ Jobs:
 import asyncio
 import re
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -47,13 +47,16 @@ async def scan_signals_job() -> None:
     ohlcv_map = await loop.run_in_executor(None, _batch_fetch, symbols)
 
     # 3. Dedup window: load signals logged in the last _DEDUP_HOURS hours
-    cutoff = datetime.utcnow() - timedelta(hours=_DEDUP_HOURS)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=_DEDUP_HOURS)
     with get_db() as db:
         recent = db.execute(
             select(SignalLog).where(SignalLog.detected_at >= cutoff)
         ).scalars().all()
 
-    recent_keys: set[str] = {f"{r.symbol}:{r.signal_type}:{r.description[:60]}" for r in recent}
+    recent_keys: set[str] = {
+        f"{r.symbol}:{r.signal_type}:{_stable_description(r.description, r.signal_type)}"
+        for r in recent
+    }
 
     # 4. Compute TA and collect new signals
     new_signals: list[dict] = []
