@@ -74,7 +74,8 @@ async def scan_all_tickers() -> None:
     )
 
     # 4. Evaluate setups for each ticker
-    new_setups   = []   # list of (TradeSetup, ltf_df)
+    new_setups    = []   # list of (TradeSetup, ltf_df)
+    closed_trades = []   # list of newly closed Trade records
 
     with get_db() as db:
         for entry in swing_tickers + intraday_tickers:
@@ -88,6 +89,15 @@ async def scan_all_tickers() -> None:
 
             # Update live outcome of previously fired setups
             _update_open_trades_for_ticker(entry.symbol, ltf_df, db)
+
+            # Evaluate open OMS positions (TP/SL triggers)
+            try:
+                from .oms import update_open_positions_for_ticker
+                just_closed = update_open_positions_for_ticker(entry.symbol, ltf_df, db)
+                if just_closed:
+                    closed_trades.extend(just_closed)
+            except Exception as e:
+                logger.warning("[trader] OMS position update failed for %s: %s", entry.symbol, e)
 
             try:
                 setups = check_all(entry.symbol, entry.category, htf_df, ltf_df)
@@ -103,7 +113,22 @@ async def scan_all_tickers() -> None:
                 new_setups.append((setup, ltf_df))   # keep ltf_df for chart generation
                 dedup_keys.add(key)  # prevent intra-scan duplicates
         
-        db.commit() # commit outcome updates
+        db.commit() # commit outcome & OMS position updates
+
+    # Notify user of any positions closed during this scan cycle
+    for tr in closed_trades:
+        try:
+            icon = "🎉" if tr.outcome == "WIN" else "🛑"
+            title = "Take Profit Hit!" if tr.outcome == "WIN" else "Stop Loss Hit."
+            close_text = (
+                f"{icon} *{title}* \\[{tr.broker.title()} Trade Closed\\]\n"
+                f"*{tr.ticker}* \\({tr.direction.upper()}\\)\n"
+                f"Entry: `{tr.entry_price:,.4f}` → Exit: `{tr.exit_price:,.4f}`\n"
+                f"Outcome: *{tr.outcome}* \\({tr.realised_rr:+.2f}R | ${tr.realised_pnl:+,.2f}\\)"
+            )
+            await notify(close_text, parse_mode="Markdown")
+        except Exception as e:
+            logger.error("[trader] Failed to send trade close alert for %s: %s", tr.ticker, e)
 
     if not new_setups:
         logger.debug("[trader] scan_all_tickers: no new setups this cycle")
@@ -239,51 +264,71 @@ def _fetch_tf_batch(symbols: list, period: str, interval: str, tf_label: str,
 
 
 def _update_open_trades_for_ticker(ticker: str, ltf_df, db) -> None:
-    """Evaluate OPEN trades for a ticker against new price bars and update outcome."""
-    from sqlalchemy import select
-    from .models import TradeSignal
-    import pandas as pd
+    """Evaluate OPEN signals for a ticker against new price bars and update theoretical outcome.
 
-    open_trades = db.execute(
+    NOTE: Only processes signals that do NOT have an active OMS Position.
+    For human-approved, executed signals, the OMS ExecutionEngine owns the lifecycle
+    (updating both Position and TradeSignal). This function tracks the raw,
+    theoretical algorithmic win-rate for non-executed signals only.
+    """
+    from sqlalchemy import select
+    from .models import Position, TradeSignal
+
+    open_signals = db.execute(
         select(TradeSignal).where(
             TradeSignal.ticker == ticker,
             TradeSignal.outcome == "OPEN"
         )
     ).scalars().all()
 
-    if not open_trades:
+    if not open_signals:
         return
 
-    # Ensure index is timezone-aware if fired_at is, or naive if not
-    for trade in open_trades:
+    # Build set of signal_ids that have an active OMS position (exclude from theoretical tracking)
+    executed_signal_ids: set[int] = set()
+    if open_signals:
+        all_signal_ids = [s.id for s in open_signals]
+        executed_positions = db.execute(
+            select(Position.signal_id).where(
+                Position.signal_id.in_(all_signal_ids),
+                Position.status == "OPEN",
+            )
+        ).scalars().all()
+        executed_signal_ids = set(executed_positions)
+
+    for trade in open_signals:
+        # Skip executed signals — OMS lifecycle owns their outcome tracking
+        if trade.id in executed_signal_ids:
+            continue
+
         try:
             fired_at = trade.fired_at.replace(tzinfo=ltf_df.index.tz) if ltf_df.index.tz is not None else trade.fired_at.replace(tzinfo=None)
             future_bars = ltf_df[ltf_df.index > fired_at]
-            
+
             for ts, row in future_bars.iterrows():
                 hi = float(row["High"])
                 lo = float(row["Low"])
-                
+
                 tp_hit = False
                 sl_hit = False
-                
+
                 if trade.direction == "long":
                     if hi >= trade.tp1: tp_hit = True
                     if lo <= trade.stop_loss: sl_hit = True
                 else:
                     if lo <= trade.tp1: tp_hit = True
                     if hi >= trade.stop_loss: sl_hit = True
-                    
+
                 if tp_hit and sl_hit:
-                    # Ambiguous candle: assume whichever is closer gets hit first
-                    tp_hit = abs(trade.entry_mid - trade.tp1) < abs(trade.entry_mid - trade.stop_loss)
-                    sl_hit = not tp_hit
+                    # Conservative default: assume SL hit first (same policy as OMS engine)
+                    tp_hit = False
+                    sl_hit = True
 
                 if tp_hit or sl_hit:
                     trade.outcome = "WIN" if tp_hit else "LOSS"
-                    # Safe conversion to naive python datetime for DB
                     trade.outcome_date = ts.to_pydatetime().replace(tzinfo=timezone.utc) if hasattr(ts, "to_pydatetime") else datetime.now(timezone.utc)
                     trade.realised_rr = trade.rr_ratio if tp_hit else -1.0
                     break
         except Exception as e:
             logger.warning("[trader] Failed to update outcome for trade %d: %s", trade.id, e)
+

@@ -29,15 +29,21 @@ def register(bot_app, scheduler, authorized) -> dict:
         confluence_command,
         approve_dismiss_callback,
         performance_command,
+        positions_command,
+        close_command,
+        account_command,
     )
     from .jobs import scan_all_tickers
 
     # ── Telegram Commands ────────────────────────────────────────────────────
-    bot_app.add_handler(CommandHandler("scan",        scan_command,       filters=authorized))
-    bot_app.add_handler(CommandHandler("setups",      setups_command,     filters=authorized))
-    bot_app.add_handler(CommandHandler("traderbias",  traderbias_command, filters=authorized))
-    bot_app.add_handler(CommandHandler("confluence",  confluence_command, filters=authorized))
+    bot_app.add_handler(CommandHandler("scan",        scan_command,        filters=authorized))
+    bot_app.add_handler(CommandHandler("setups",      setups_command,      filters=authorized))
+    bot_app.add_handler(CommandHandler("traderbias",  traderbias_command,  filters=authorized))
+    bot_app.add_handler(CommandHandler("confluence",  confluence_command,  filters=authorized))
     bot_app.add_handler(CommandHandler("performance", performance_command, filters=authorized))
+    bot_app.add_handler(CommandHandler("positions",   positions_command,   filters=authorized))
+    bot_app.add_handler(CommandHandler("close",       close_command,       filters=authorized))
+    bot_app.add_handler(CommandHandler("account",     account_command,     filters=authorized))
 
     # Inline button callbacks (no auth filter — callback_query already scoped by chat_id in bot.py)
     bot_app.add_handler(
@@ -58,12 +64,15 @@ def register(bot_app, scheduler, authorized) -> dict:
     return {
         "name":        NAME,
         "description": DESCRIPTION,
-        "commands":    ["scan", "setups", "traderbias", "confluence", "performance"],
+        "commands":    ["scan", "setups", "traderbias", "confluence", "performance", "positions", "close", "account"],
         "help": [
             "`/scan [ticker]`       — Force trade scan on full watchlist or one ticker",
             "`/setups`              — List active setups from the last 48 hours",
             "`/traderbias <ticker>` — HTF RSI hidden divergence bias breakdown",
             "`/confluence <ticker>` — Volume profile (POC/VAH/VAL) + S/R levels",
-            "`/performance`         — Show live performance statistics per strategy",
+            "`/positions`           — List active open positions with live P&L",
+            "`/close <id>`          — Manually exit an open position at market price",
+            "`/account`             — Paper trading account balance, equity & stats",
+            "`/performance`         — Live performance stats (OMS trades & signals)",
         ],
     }

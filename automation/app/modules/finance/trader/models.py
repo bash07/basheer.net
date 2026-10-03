@@ -161,3 +161,47 @@ class Trade(Base):
             f"<Trade id={self.id} {self.ticker} {self.outcome} "
             f"RR={self.realised_rr:.2f}>"
         )
+
+
+# ── OMS: Order (order lifecycle) ──────────────────────────────────────────────
+
+class Order(Base):
+    """An execution order submitted to a broker (entry, SL, TP, or market exit).
+
+    Lifecycle: PENDING → FILLED | CANCELLED | REJECTED.
+    """
+
+    __tablename__ = "orders"
+
+    id:              Mapped[int]           = mapped_column(Integer, primary_key=True)
+    position_id:     Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("positions.id"), nullable=True, index=True
+    )
+    signal_id:       Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("trade_signals.id"), nullable=True, index=True
+    )
+
+    ticker:          Mapped[str]           = mapped_column(String(30), index=True)
+    side:            Mapped[str]           = mapped_column(String(10))          # "buy" | "sell"
+    order_type:      Mapped[str]           = mapped_column(String(20))          # "market" | "limit" | "stop"
+    qty:             Mapped[float]         = mapped_column(Float)
+    price:           Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # "PENDING" | "FILLED" | "CANCELLED" | "REJECTED"
+    status:          Mapped[str]           = mapped_column(String(20), default="PENDING")
+
+    broker:          Mapped[str]           = mapped_column(String(30), default="paper")
+    broker_order_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+
+    created_at:      Mapped[datetime]      = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+    filled_at:       Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    filled_price:    Mapped[Optional[float]]    = mapped_column(Float, nullable=True)
+
+    def __repr__(self) -> str:
+        return (
+            f"<Order id={self.id} {self.ticker} {self.side} {self.qty} "
+            f"[{self.status}] @ {self.filled_price or self.price}>"
+        )
+

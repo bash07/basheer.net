@@ -17,8 +17,15 @@ logger = logging.getLogger(__name__)
 
 
 def _safe_md(text: str) -> str:
-    """Escape Markdown special characters in exception messages."""
-    for ch in r"_*`[":
+    """Escape Markdown special characters in exception messages.
+
+    Escapes characters that Telegram Markdown V1 may misparse in inline text:
+    * _ — italic marker
+    * * — bold marker
+    * ` — code span marker
+    * [ ] — link syntax anchor characters
+    """
+    for ch in r"_*`[]":
         text = text.replace(ch, f"\\{ch}")
     return text
 
@@ -362,7 +369,9 @@ async def approve_dismiss_callback(
 
     approved  = (action == "approve")
 
-    # Update the database
+    # Update the database & OMS execution
+    pos = None
+    pos_err = None
     try:
         from sqlalchemy import select
         from core.db import get_db
@@ -379,20 +388,34 @@ async def approve_dismiss_callback(
             else:
                 logger.warning("[trader] approve_dismiss: signal %d not found in DB", signal_id)
 
+        if approved:
+            from .oms import open_position_from_signal
+            pos, pos_err = open_position_from_signal(signal_id)
+
     except Exception as e:
-        logger.error("[trader] approve_dismiss DB update failed: %s", e, exc_info=True)
+        logger.error("[trader] approve_dismiss DB/OMS update failed: %s", e, exc_info=True)
+        pos_err = str(e)
 
     # Edit the original Telegram message to remove the buttons and confirm
     try:
         if approved:
-            status_line = (
-                "\n\n✅ *Trade Approved by Human*\n"
-                "_You have approved this setup\\. The signal has been recorded\\._"
-            )
+            if pos:
+                status_line = (
+                    f"\n\n✅ *Trade Approved & Position Opened \\[{pos.broker.upper()}\\]*\n"
+                    f"Position `#{pos.id}`: *{pos.direction.upper()}* `{pos.qty:g}` *{pos.ticker}* @ `{pos.entry_price:,.4f}`\n"
+                    f"SL: `{pos.stop_loss:,.4f}` | TP1: `{pos.take_profit:,.4f}`\n"
+                    f"_Live position tracking is active\\._"
+                )
+            else:
+                status_line = (
+                    f"\n\n⚠️ *Trade Approved — Execution Skipped*\n"
+                    f"Reason: _{_safe_md(pos_err or 'Risk limit exceeded')}_\n"
+                    f"_Signal recorded as approved, but no position opened\\._"
+                )
         else:
             status_line = (
                 "\n\n❌ *Trade Dismissed by Human*\n"
-                "_You dismissed this setup\\. No action will be taken\\._"
+                "_You dismissed this setup\\. No position was opened\\._"
             )
 
         original_caption = query.message.caption or ""
@@ -411,48 +434,198 @@ async def approve_dismiss_callback(
         logger.error("[trader] approve_dismiss: failed to edit message: %s", e)
 
 
+# ── /positions ────────────────────────────────────────────────────────────────
+
+async def positions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/positions — List all currently open trading positions with live P&L."""
+    from core.db import get_db
+    from .oms import get_open_positions, get_broker
+
+    with get_db() as db:
+        open_positions = get_open_positions(db)
+
+    if not open_positions:
+        await update.message.reply_text(
+            "📭 No open positions currently\\.\n"
+            "_Approve trade signals from scanner alerts to open positions\\._",
+            parse_mode="Markdown",
+        )
+        return
+
+    broker = get_broker()
+    lines = [f"📊 *Open Trading Positions* \\({len(open_positions)}\\):\n"]
+    lines.append("```text")
+    lines.append(f"{'ID':<4} {'Ticker':<9} {'Side':<5} {'Qty':<7} {'Entry':<9} {'Curr':<9} {'PnL ($)':<9} {'R:R':<5}")
+    lines.append("-" * 62)
+
+    total_unrealised_pnl = 0.0
+    for p in open_positions:
+        curr_price = broker.get_current_price(p.ticker)
+        mult = 1.0 if p.direction == "long" else -1.0
+        qty = p.qty or 1.0
+        pnl = (curr_price - p.entry_price) * qty * mult if curr_price > 0 else 0.0
+        total_unrealised_pnl += pnl
+
+        unit_risk = abs(p.entry_price - p.stop_loss)
+        unrealised_rr = (
+            ((curr_price - p.entry_price) * mult / unit_risk)
+            if unit_risk > 0 and curr_price > 0
+            else 0.0
+        )
+
+        side_str = "BUY" if p.direction == "long" else "SELL"
+        lines.append(
+            f"#{p.id:<3} {p.ticker:<9} {side_str:<5} {qty:<7.2f} "
+            f"{p.entry_price:<9.2f} {curr_price:<9.2f} {pnl:+<9.2f} {unrealised_rr:+<4.1f}R"
+        )
+
+    lines.append("-" * 62)
+    lines.append(f"Total Unrealised PnL: ${total_unrealised_pnl:+,.2f}")
+    lines.append("```")
+    lines.append("\n_Use `/close <id>` to exit a position manually at market price._")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+# ── /close ────────────────────────────────────────────────────────────────────
+
+async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/close <position_id> — Manually close an open position at market price."""
+    args = context.args or []
+    if not args:
+        await update.message.reply_text(
+            "Usage: `/close <position_id>`\nExample: `/close 1`",
+            parse_mode="Markdown",
+        )
+        return
+
+    try:
+        position_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Position ID must be an integer.")
+        return
+
+    from .oms import close_position_manual
+    trade, msg = close_position_manual(position_id=position_id)
+
+    if not trade:
+        await update.message.reply_text(
+            f"❌ Failed to close position: {_safe_md(msg)}",
+            parse_mode="Markdown",
+        )
+        return
+
+    icon = "🎉" if trade.outcome == "WIN" else ("🛑" if trade.outcome == "LOSS" else "⚪")
+    text = "\n".join([
+        f"✅ *Position #{trade.position_id} Closed [Manual]*",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"Symbol:       `{trade.ticker}` \\({trade.direction.upper()}\\)",
+        f"Entry Price:  `{trade.entry_price:,.4f}`",
+        f"Exit Price:   `{trade.exit_price:,.4f}`",
+        f"Quantity:     `{trade.qty:g}`",
+        f"Outcome:      {icon} *{trade.outcome}*",
+        f"Realised RR:  `{trade.realised_rr:+.2f}R`",
+        f"Realised PnL: `${trade.realised_pnl:+,.2f}`",
+        "━━━━━━━━━━━━━━━━━━━━",
+    ])
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+# ── /account ──────────────────────────────────────────────────────────────────
+
+async def account_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/account — Show paper trading account balance, equity, and performance."""
+    from core.db import get_db
+    from .oms import get_account_summary
+
+    with get_db() as db:
+        summary = get_account_summary(db)
+
+    pnl_icon = "🟢" if summary["unrealised_pnl"] >= 0 else "🔴"
+    realised_icon = "🟢" if summary["total_realised_pnl"] >= 0 else "🔴"
+
+    text = "\n".join([
+        f"💼 *Trading Account Summary* \\[{summary['broker'].title()}\\]",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"💵 Cash Balance:     `${summary['balance']:,.2f} {summary['currency']}`",
+        f"📈 Account Equity:    `${summary['equity']:,.2f} {summary['currency']}`",
+        f"{pnl_icon} Unrealised P&L:   `${summary['unrealised_pnl']:+,.2f}`",
+        f"🎯 Open Positions:   `{summary['open_positions_count']} / {summary['max_open_positions']}`",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"🏆 Closed Trades:    `{summary['total_trades']}` \\({summary['wins']}W / {summary['losses']}L\\)",
+        f"🎯 Win Rate:         `{summary['win_rate']:.1f}%`",
+        f"📐 Average RR:       `{summary['avg_rr']:.2f}×`",
+        f"{realised_icon} Realised P&L:    `${summary['total_realised_pnl']:+,.2f}`",
+        f"⚙️ Risk Per Trade:   `{summary['risk_per_trade_pct']*100:.1f}%`",
+        "━━━━━━━━━━━━━━━━━━━━",
+    ])
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
 # ── /performance ──────────────────────────────────────────────────────────────
 
 async def performance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/performance — Show live performance statistics per strategy."""
+    """/performance — Show executed trades analytics and signal scanner stats."""
     from sqlalchemy import select
     from core.db import get_db
-    from .models import TradeSignal
+    from .models import Trade, TradeSignal
 
     with get_db() as db:
-        rows = db.execute(select(TradeSignal)).scalars().all()
+        trades = db.execute(select(Trade)).scalars().all()
+        signals = db.execute(select(TradeSignal)).scalars().all()
 
-    if not rows:
-        await update.message.reply_text("📭 No trade signals recorded yet.", parse_mode="Markdown")
+    if not trades and not signals:
+        await update.message.reply_text("📭 No trading records found yet.", parse_mode="Markdown")
         return
 
-    # Aggregate stats per setup_name
-    stats = {}
-    for r in rows:
-        sn = r.setup_name
-        if sn not in stats:
-            stats[sn] = {"W": 0, "L": 0, "OPEN": 0, "RR_sum": 0.0}
-        
-        # Outcome can be "WIN", "LOSS", "OPEN"
-        stats[sn][r.outcome] += 1
-        if r.outcome == "WIN" and r.realised_rr is not None:
-            stats[sn]["RR_sum"] += r.realised_rr
+    lines = ["📊 *Trading Performance Analytics*\n"]
 
-    lines = ["📊 *Live Performance Stats*\n"]
-    lines.append("```text")
-    lines.append(f"{'Setup Name':<26} {'W':<4} {'L':<4} {'OPEN':<5} {'WR%':<6} {'Avg RR':<6}")
-    lines.append("-" * 55)
+    # 1. Executed Trades (OMS Ledger)
+    if trades:
+        wins = sum(1 for t in trades if t.outcome == "WIN")
+        losses = sum(1 for t in trades if t.outcome == "LOSS")
+        total = wins + losses
+        wr = (wins / total * 100) if total > 0 else 0.0
+        pnl = sum((t.realised_pnl or 0.0) for t in trades)
+        rr_sum = sum(t.realised_rr for t in trades if t.outcome == "WIN")
+        avg_rr = (rr_sum / wins) if wins > 0 else 0.0
 
-    for sn, s in stats.items():
-        w, l, o = s["W"], s["L"], s["OPEN"]
-        total_closed = w + l
-        wr = (w / total_closed * 100) if total_closed > 0 else 0.0
-        avg_rr = (s["RR_sum"] / w) if w > 0 else 0.0
-        
-        name_short = sn[:25]
+        lines.append("*Executed Trades (OMS):*")
         lines.append(
-            f"{name_short:<26} {w:<4} {l:<4} {o:<5} {wr:>4.1f}%  {avg_rr:>4.1f}x"
+            f"  • Total Closed: `{len(trades)}` ({wins}W / {losses}L)\n"
+            f"  • Win Rate:     `{wr:.1f}%`\n"
+            f"  • Avg Win RR:   `{avg_rr:.2f}×`\n"
+            f"  • Realised P&L: `${pnl:+,.2f}`\n"
         )
-        
-    lines.append("```")
+    else:
+        lines.append("*Executed Trades (OMS):* _None closed yet_\n")
+
+    # 2. Algorithmic Signals Breakdown
+    if signals:
+        stats: dict[str, dict] = {}
+        for r in signals:
+            sn = r.setup_name
+            if sn not in stats:
+                stats[sn] = {"W": 0, "L": 0, "OPEN": 0, "RR_sum": 0.0}
+
+            stats[sn][r.outcome] += 1
+            if r.outcome == "WIN" and r.realised_rr is not None:
+                stats[sn]["RR_sum"] += r.realised_rr
+
+        lines.append("*Signal Scanner Stats (Raw Signals):*")
+        lines.append("```text")
+        lines.append(f"{'Setup Name':<25} {'W':<3} {'L':<3} {'OPN':<4} {'WR%':<5} {'AvgRR':<5}")
+        lines.append("-" * 52)
+
+        for sn, s in stats.items():
+            w, l, o = s["W"], s["L"], s["OPEN"]
+            total_closed = w + l
+            swr = (w / total_closed * 100) if total_closed > 0 else 0.0
+            s_avg_rr = (s["RR_sum"] / w) if w > 0 else 0.0
+            name_short = sn[:24]
+            lines.append(
+                f"{name_short:<25} {w:<3} {l:<3} {o:<4} {swr:>4.0f}% {s_avg_rr:>4.1f}x"
+            )
+        lines.append("```")
+
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+

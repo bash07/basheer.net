@@ -10,7 +10,14 @@ from contextlib import contextmanager
 
 from config import config
 
-_db_path = os.path.join(config.data_dir, "automation.db")
+_data_dir = config.data_dir
+try:
+    os.makedirs(_data_dir, exist_ok=True)
+except Exception:
+    _data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+    os.makedirs(_data_dir, exist_ok=True)
+
+_db_path = os.path.join(_data_dir, "automation.db")
 engine = create_engine(
     f"sqlite:///{_db_path}",
     connect_args={"check_same_thread": False},
