@@ -22,6 +22,7 @@ from telegram.ext import (
 from config import config
 from core.queue import queue
 from core.registry import get_loaded
+from core.version import get_version_info
 
 logger = logging.getLogger(__name__)
 
@@ -224,12 +225,30 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uptime_s = int(time.time() - _startup_time)
     h, m = divmod(uptime_s // 60, 60)
     running = queue.running()
+    v_info = get_version_info()
+
+    meta_parts = []
+    if v_info.get("commit"):
+        meta_parts.append(f"`{v_info['commit']}`")
+    if v_info.get("build_date"):
+        meta_parts.append(v_info["build_date"])
+    meta_str = f" ({' · '.join(meta_parts)})" if meta_parts else ""
 
     lines = [
         "📊 *System Status*\n",
-        f"⏱ Uptime: {h}h {m}m",
-        f"🔄 Active tasks: {len(running)}",
+        f"🏷 *Version:* `v{v_info['version']}`{meta_str}",
     ]
+    if v_info.get("summary"):
+        summary_text = v_info["summary"]
+        if len(summary_text) > 80:
+            summary_text = summary_text[:77] + "..."
+        summary_text = summary_text.replace("`", "'")
+        lines.append(f"📝 *Latest:* `{summary_text}`")
+
+    lines.extend([
+        f"\n⏱ Uptime: {h}h {m}m",
+        f"🔄 Active tasks: {len(running)}",
+    ])
     if running:
         for t in running:
             elapsed = int(time.time() - t.started_at)
@@ -321,8 +340,9 @@ def create_bot_app() -> Application:
     # Built-in slash commands
     bot_app.add_handler(CommandHandler("start",  start_handler,  filters=AUTHORIZED))
     bot_app.add_handler(CommandHandler("menu",   menu_handler,   filters=AUTHORIZED))
-    bot_app.add_handler(CommandHandler("status", status_handler, filters=AUTHORIZED))
-    bot_app.add_handler(CommandHandler("help",   help_handler,   filters=AUTHORIZED))
+    bot_app.add_handler(CommandHandler("status",  status_handler,  filters=AUTHORIZED))
+    bot_app.add_handler(CommandHandler("version", status_handler,  filters=AUTHORIZED))
+    bot_app.add_handler(CommandHandler("help",    help_handler,    filters=AUTHORIZED))
     bot_app.add_handler(CommandHandler("cancel", cancel_handler, filters=AUTHORIZED))
 
     # Inline-keyboard menu callbacks (no auth filter needed — only our chat_id

@@ -244,7 +244,7 @@ def _swing_pivot_levels(df_ltf) -> list[SRLevel]:
     """Swing highs/lows from the last _SR_PIVOT_BARS on the LTF chart."""
     try:
         import numpy as np
-        from scipy.signal import argrelextrema
+        from modules.finance._shared.extrema import argrelextrema
     except ImportError:
         return []
 

@@ -72,11 +72,12 @@ async def lifespan(app: FastAPI):
         return f"{m['name']} — {cmd}"
 
     cmds = [
-        BotCommand("start",  "Interactive module menu"),
-        BotCommand("menu",   "Interactive module menu"),
-        BotCommand("status", "System status & uptime"),
-        BotCommand("help",   "Full command reference"),
-        BotCommand("cancel", "Cancel running tasks"),
+        BotCommand("start",   "Interactive module menu"),
+        BotCommand("menu",    "Interactive module menu"),
+        BotCommand("status",  "System status & uptime"),
+        BotCommand("version", "Version & latest changes"),
+        BotCommand("help",    "Full command reference"),
+        BotCommand("cancel",  "Cancel running tasks"),
     ]
     for m in get_loaded():
         for c in m["commands"]:
@@ -97,10 +98,12 @@ async def lifespan(app: FastAPI):
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
+from core.version import __version__, get_version_info
+
 app = FastAPI(
     title="basheer.net Automation Server",
     description="Self-hosted multi-module automation platform — ai.basheer.net",
-    version="1.0.0",
+    version=__version__,
     lifespan=lifespan,
 )
 
@@ -110,16 +113,25 @@ app = FastAPI(
 @app.get("/")
 def root():
     from core.registry import get_loaded
+    v_info = get_version_info()
     return {
         "service": "basheer.net Automation Server",
         "url": "https://ai.basheer.net",
+        "version": v_info["version"],
+        "commit": v_info["commit"],
         "modules": [m["name"] for m in get_loaded()],
     }
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "timestamp": int(time.time())}
+    v_info = get_version_info()
+    return {
+        "status": "ok",
+        "version": v_info["version"],
+        "commit": v_info["commit"],
+        "timestamp": int(time.time()),
+    }
 
 
 class GenerateRequest(BaseModel):

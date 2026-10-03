@@ -44,9 +44,9 @@ def detect_structure(df) -> SwingStructure:
     """
     try:
         import numpy as np
-        from scipy.signal import argrelextrema
+        from modules.finance._shared.extrema import argrelextrema
     except ImportError:
-        logger.warning("[trader.scanner] scipy not available — structure skipped")
+        logger.warning("[trader.scanner] numpy not available — structure skipped")
         return SwingStructure(trend="ranging")
 
     high  = df["High"].values
@@ -328,9 +328,9 @@ def find_eqh_eql(df) -> list[LiquidityLevel]:
     """
     try:
         import numpy as np
-        from scipy.signal import argrelextrema
+        from modules.finance._shared.extrema import argrelextrema
     except ImportError:
-        logger.warning("[trader.scanner] scipy not available — EQH/EQL skipped")
+        logger.warning("[trader.scanner] numpy not available — EQH/EQL skipped")
         return []
 
     high  = df["High"].values

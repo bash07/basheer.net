@@ -171,9 +171,9 @@ def _hidden_divergence(close, rsi_series) -> str:
     """
     try:
         import numpy as np
-        from scipy.signal import argrelextrema
+        from modules.finance._shared.extrema import argrelextrema
     except ImportError:
-        logger.warning("[trader.bias] scipy not available — hidden divergence skipped")
+        logger.warning("[trader.bias] numpy not available — hidden divergence skipped")
         return "none"
 
     n    = _HD_LOOKBACK

@@ -233,9 +233,9 @@ def _rsi_divergence(close, rsi_series) -> str:
     """
     try:
         import numpy as np
-        from scipy.signal import argrelextrema  # lightweight — already a numpy dependency
+        from modules.finance._shared.extrema import argrelextrema
     except ImportError:
-        logger.warning("[ta] scipy not available — RSI divergence skipped")
+        logger.warning("[ta] numpy not available — RSI divergence skipped")
         return "none"
 
     n   = _DIVERGENCE_LOOKBACK
@@ -338,7 +338,7 @@ def _potential_divergence(close, rsi_series, current_price: float) -> str | None
     """Detect developing divergence where price tests a swing extreme while RSI curls counter-trend."""
     try:
         import numpy as np
-        from scipy.signal import argrelextrema
+        from modules.finance._shared.extrema import argrelextrema
     except ImportError:
         return None
 
