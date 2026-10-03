@@ -1,7 +1,7 @@
 """Telegram command handlers for the finance/trader module.
 
 Commands:
-  /scan [ticker]         Force ICT scan on full watchlist or a single ticker
+  /scan [ticker]         Force trade scan on full watchlist or a single ticker
   /setups                List active trade signals from the last 48 hours
   /traderbias <ticker>   Show HTF RSI bias breakdown for a single ticker
   /confluence <ticker>   Show Volume Profile + S/R levels for a single ticker
@@ -26,7 +26,7 @@ def _safe_md(text: str) -> str:
 # ── /scan ─────────────────────────────────────────────────────────────────────
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/scan [ticker] — Force an immediate ICT scan.
+    """/scan [ticker] — Force an immediate trade scan.
 
     With no argument: scans the full watchlist (same as the scheduled job).
     With a ticker:    scans only that single ticker regardless of market hours.
@@ -36,7 +36,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if single_ticker:
         msg = await update.message.reply_text(
-            f"🔍 Scanning `{single_ticker}` for ICT setups…", parse_mode="Markdown"
+            f"🔍 Scanning `{single_ticker}` for Trade setups…", parse_mode="Markdown"
         )
         try:
             result_text = await _scan_single(single_ticker)
@@ -48,7 +48,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             except Exception:
                 await msg.edit_text(f"❌ Scan failed for {single_ticker}: {e}")
     else:
-        msg = await update.message.reply_text("🔍 Scanning full watchlist for ICT setups…")
+        msg = await update.message.reply_text("🔍 Scanning full watchlist for Trade setups…")
         try:
             from .jobs import scan_all_tickers
             await scan_all_tickers()
@@ -62,7 +62,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def _scan_single(ticker: str) -> str:
-    """Run the ICT scanner for a single ticker and return a formatted result."""
+    """Run the trading scanner for a single ticker and return a formatted result."""
     import asyncio
     from sqlalchemy import select
     from core.db import get_db
@@ -113,7 +113,7 @@ async def _scan_single(ticker: str) -> str:
         from .bias import compute_htf_bias
         bias = compute_htf_bias(htf_df, mode)
         return (
-            f"📭 *{ticker}* — No ICT setups found right now\\.\n\n"
+            f"📭 *{ticker}* — No Trade setups found right now\\.\n\n"
             f"🧭 HTF Bias: *{bias.bias.replace('_', ' ').title()}*\n"
             f"_{bias.bias_notes}_"
         )
@@ -160,12 +160,12 @@ async def setups_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if not rows:
         await update.message.reply_text(
-            "📭 No ICT setups in the last 48 hours\\. The scanner runs every 30 minutes\\.",
+            "📭 No Trade setups in the last 48 hours\\. The scanner runs every 30 minutes\\.",
             parse_mode="Markdown",
         )
         return
 
-    lines = ["🎯 *Active ICT Setups* \\(last 48h\\):\n"]
+    lines = ["🎯 *Active Trade Setups* \\(last 48h\\):\n"]
     for row in rows:
         ts      = row.fired_at.strftime("%d %b %H:%M")
         dir_e   = "📈" if row.direction == "long" else "📉"
@@ -347,3 +347,128 @@ async def confluence_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
         except Exception:
             await msg.edit_text(f"❌ Confluence report failed for {ticker}: {e}")
+
+
+# ── Approve / Dismiss callback ────────────────────────────────────────────────
+
+async def approve_dismiss_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle inline keyboard button presses for trade signal approval.
+
+    Callback data format: "trade:approve:<signal_id>" | "trade:dismiss:<signal_id>"
+
+    On Approve: marks the signal as human_approved=True in the DB,
+                edits the Telegram message to show a confirmation.
+    On Dismiss: marks the signal as human_approved=False in the DB,
+                edits the Telegram message to show a dismissal notice.
+    """
+    query = update.callback_query
+    await query.answer()   # acknowledge the button tap immediately (removes loading spinner)
+
+    data = query.data or ""
+    # Expected: "trade:approve:42" or "trade:dismiss:42"
+    parts = data.split(":")
+    if len(parts) != 3 or parts[0] != "trade":
+        logger.warning("[trader] Unexpected callback data: %s", data)
+        return
+
+    action    = parts[1]          # "approve" | "dismiss"
+    signal_id = int(parts[2])
+
+    approved  = (action == "approve")
+
+    # Update the database
+    try:
+        from sqlalchemy import select
+        from core.db import get_db
+        from .models import TradeSignal
+
+        with get_db() as db:
+            row = db.execute(
+                select(TradeSignal).where(TradeSignal.id == signal_id)
+            ).scalar_one_or_none()
+
+            if row:
+                row.human_approved = approved
+                db.commit()
+            else:
+                logger.warning("[trader] approve_dismiss: signal %d not found in DB", signal_id)
+
+    except Exception as e:
+        logger.error("[trader] approve_dismiss DB update failed: %s", e, exc_info=True)
+
+    # Edit the original Telegram message to remove the buttons and confirm
+    try:
+        if approved:
+            status_line = (
+                "\n\n✅ *Trade Approved by Human*\n"
+                "_You have approved this setup\\. The signal has been recorded\\._"
+            )
+        else:
+            status_line = (
+                "\n\n❌ *Trade Dismissed by Human*\n"
+                "_You dismissed this setup\\. No action will be taken\\._"
+            )
+
+        original_caption = query.message.caption or ""
+        new_caption = original_caption + status_line
+
+        # Telegram captions max 1024 chars
+        if len(new_caption) > 1024:
+            new_caption = new_caption[:1020] + "…"
+
+        await query.edit_message_caption(
+            caption=new_caption,
+            parse_mode="Markdown",
+            reply_markup=None,    # removes the buttons
+        )
+    except Exception as e:
+        logger.error("[trader] approve_dismiss: failed to edit message: %s", e)
+
+
+# ── /performance ──────────────────────────────────────────────────────────────
+
+async def performance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/performance — Show live performance statistics per strategy."""
+    from sqlalchemy import select
+    from core.db import get_db
+    from .models import TradeSignal
+
+    with get_db() as db:
+        rows = db.execute(select(TradeSignal)).scalars().all()
+
+    if not rows:
+        await update.message.reply_text("📭 No trade signals recorded yet.", parse_mode="Markdown")
+        return
+
+    # Aggregate stats per setup_name
+    stats = {}
+    for r in rows:
+        sn = r.setup_name
+        if sn not in stats:
+            stats[sn] = {"W": 0, "L": 0, "OPEN": 0, "RR_sum": 0.0}
+        
+        # Outcome can be "WIN", "LOSS", "OPEN"
+        stats[sn][r.outcome] += 1
+        if r.outcome == "WIN" and r.realised_rr is not None:
+            stats[sn]["RR_sum"] += r.realised_rr
+
+    lines = ["📊 *Live Performance Stats*\n"]
+    lines.append("```text")
+    lines.append(f"{'Setup Name':<26} {'W':<4} {'L':<4} {'OPEN':<5} {'WR%':<6} {'Avg RR':<6}")
+    lines.append("-" * 55)
+
+    for sn, s in stats.items():
+        w, l, o = s["W"], s["L"], s["OPEN"]
+        total_closed = w + l
+        wr = (w / total_closed * 100) if total_closed > 0 else 0.0
+        avg_rr = (s["RR_sum"] / w) if w > 0 else 0.0
+        
+        name_short = sn[:25]
+        lines.append(
+            f"{name_short:<26} {w:<4} {l:<4} {o:<5} {wr:>4.1f}%  {avg_rr:>4.1f}x"
+        )
+        
+    lines.append("```")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")

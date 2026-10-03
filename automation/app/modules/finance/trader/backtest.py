@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ICT + RSI Backtest Engine  -  finance/trader module
+Trade + RSI Backtest Engine  -  finance/trader module
 ====================================================
 
 Replays the scanner bar-by-bar on historical data with ZERO lookahead bias.
@@ -129,6 +129,7 @@ def run_backtest(
     step:             int   = 1,
     min_score:        float = 5.0,
     max_outcome_bars: int   = 50,
+    disabled_setups:  Optional[set] = None,   # e.g. {"Liquidity Sweep + FVG"}
 ) -> BacktestReport:
     """Run bar-by-bar replay backtest."""
     from modules.finance.trader.schemas import scan_mode_for, timeframes_for
@@ -136,19 +137,33 @@ def run_backtest(
     import modules.finance.trader.setups as setups_mod
 
     original_min_score    = setups_mod._MIN_SCORE
+    original_disabled     = setups_mod.DISABLED_SETUPS.copy()
     setups_mod._MIN_SCORE = min_score
+
+    # --disable flag: ADD to whatever the config already disables (not replace)
+    effective_disabled = setups_mod.DISABLED_SETUPS.copy()
+    if disabled_setups:
+        effective_disabled |= disabled_setups
+    setups_mod.DISABLED_SETUPS = effective_disabled
 
     try:
         mode = scan_mode_for(category)
         htf_tf, ltf_tf, _ = timeframes_for(mode)
 
         print("\n" + "=" * 60)
-        print(f"ICT Backtest: {ticker} | {mode.upper()} mode")
+        print(f"Strategy Backtest: {ticker} | {mode.upper()} mode")
         print(f"Period:  {date_from}  to  {date_to}")
         print(f"HTF: {htf_tf.upper()}  |  LTF: {ltf_tf.upper()}")
         print("=" * 60)
 
-        print("Downloading historical data ...")
+        from modules.finance.trader.setups import ALL_SETUP_NAMES
+        active_setups   = [n for n in ALL_SETUP_NAMES if n not in effective_disabled]
+        disabled_setups_list = [n for n in ALL_SETUP_NAMES if n in effective_disabled]
+        print(f"Active setups  : {', '.join(active_setups) if active_setups else 'NONE'}")
+        if disabled_setups_list:
+            print(f"Disabled setups: {', '.join(disabled_setups_list)}")
+        print()
+        print("Loading historical data ...")
         full_ltf, full_htf = _download_full_history(ticker, mode, date_from, date_to)
 
         if full_ltf is None or full_ltf.empty:
@@ -187,6 +202,46 @@ def run_backtest(
         n = len(full_ltf)
         total_replay_bars = replay_end - replay_start
         print(f"LTF bars total: {n} | replay window: {total_replay_bars} | step: {step}")
+
+        # ── Pre-compute static indicator series on the FULL dataset (Issue 6 fix) ──
+        # These are O(N) once. Reading them per bar is O(1) instead of O(N).
+        # Structure detection (argrelextrema) still needs per-bar slicing to avoid
+        # lookahead bias — that is an inherent constraint of zero-lookahead replay.
+        print("  Pre-computing indicator series...")
+        import pandas as pd
+
+        _close = full_ltf["Close"]
+        _high  = full_ltf["High"]
+        _low   = full_ltf["Low"]
+
+        # RSI-14 (Wilder EWM)
+        _delta    = _close.diff()
+        _gain     = _delta.where(_delta > 0, 0.0)
+        _loss     = (-_delta).where(_delta < 0, 0.0)
+        _ag       = _gain.ewm(com=13, min_periods=14).mean()
+        _al       = _loss.ewm(com=13, min_periods=14).mean()
+        _rs       = _ag / _al.replace(0, float("inf"))
+        _rsi14    = (100 - 100 / (1 + _rs)).rename("rsi_14")
+
+        # EMA 8/21 (used by EMA Pullback strategy)
+        _ema8     = _close.ewm(span=8,  adjust=False).mean().rename("ema_8")
+        _ema21    = _close.ewm(span=21, adjust=False).mean().rename("ema_21")
+
+        # ATR-14 True Range
+        _tr1 = _high - _low
+        _tr2 = (_high - _close.shift(1)).abs()
+        _tr3 = (_low  - _close.shift(1)).abs()
+        _tr  = pd.concat([_tr1, _tr2, _tr3], axis=1).max(axis=1)
+        _atr14 = _tr.rolling(14).mean().rename("atr_14")
+
+        # Attach precomputed columns to the full_ltf DataFrame
+        # Strategies can read them directly from df_ltf.iloc[-1]["rsi_14"] etc.
+        full_ltf = full_ltf.copy()
+        full_ltf["rsi_14"] = _rsi14
+        full_ltf["ema_8"]  = _ema8
+        full_ltf["ema_21"] = _ema21
+        full_ltf["atr_14"] = _atr14
+        print("  Indicator pre-computation done. Starting replay...")
 
         report = BacktestReport(
             ticker=ticker, category=category, mode=mode,
@@ -258,7 +313,13 @@ def run_backtest(
         return report
 
     finally:
-        setups_mod._MIN_SCORE = original_min_score
+        setups_mod._MIN_SCORE   = original_min_score
+        setups_mod.DISABLED_SETUPS = original_disabled
+
+        if disabled_setups:
+            print(f"  Disabled during run: {', '.join(sorted(disabled_setups))}")
+
+
 
 
 def _empty_report(ticker, category, mode, date_from, date_to) -> BacktestReport:
@@ -353,7 +414,28 @@ def _download_full_history(ticker: str, mode: str, date_from: date, date_to: dat
         )
 
     def _dl(start: date, end: date, interval: str, label: str):
-        """Download and normalise one OHLCV block."""
+        """Download and normalise one OHLCV block, with local disk caching."""
+        import os
+        import pandas as pd
+        
+        cache_dir = os.path.join(os.path.dirname(__file__), ".backtest_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_file = os.path.join(cache_dir, f"{ticker}_{interval}_{start}_{end}.pkl")
+
+        # 1. Try to load from cache
+        if os.path.exists(cache_file):
+            try:
+                df = pd.read_pickle(cache_file)
+                print(
+                    f"  {label} ({interval}): {len(df)} bars  "
+                    f"[{str(df.index[0])[:10]} -> {str(df.index[-1])[:10]}] (cached)"
+                )
+                return df
+            except Exception as e:
+                logger.debug("Failed to load cache %s: %s", cache_file, e)
+                # Fall through to download
+
+        # 2. Not in cache (or cache corrupt) — download from yfinance
         try:
             df = yf.download(
                 tickers=ticker,
@@ -380,7 +462,7 @@ def _download_full_history(ticker: str, mode: str, date_from: date, date_to: dat
             return None
 
         # Flatten MultiIndex columns produced by newer yfinance versions
-        if isinstance(df.columns, __import__("pandas").MultiIndex):
+        if isinstance(df.columns, pd.MultiIndex):
             # e.g. ("Close", "AAPL") -> "Close"
             df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
 
@@ -394,9 +476,16 @@ def _download_full_history(ticker: str, mode: str, date_from: date, date_to: dat
             return None
 
         df = df[keep].dropna()
+        
+        # 3. Save to cache
+        try:
+            df.to_pickle(cache_file)
+        except Exception as e:
+            logger.debug("Failed to write cache %s: %s", cache_file, e)
+            
         print(
             f"  {label} ({interval}): {len(df)} bars  "
-            f"[{str(df.index[0])[:10]} -> {str(df.index[-1])[:10]}]"
+            f"[{str(df.index[0])[:10]} -> {str(df.index[-1])[:10]}] (downloaded)"
         )
         return df
 
@@ -538,7 +627,7 @@ def save_csv(report: BacktestReport, path: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="ICT + RSI backtest engine",
+        description="Trade + RSI backtest engine",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--ticker",    required=True)
@@ -556,10 +645,35 @@ def main() -> None:
                         help="Min confluence score (default 5.0)")
     parser.add_argument("--max-bars",  type=int,   default=50,
                         help="Forward bars to evaluate outcome (default 50)")
+    parser.add_argument("--disable",   nargs="+",  default=[],
+                        metavar="SETUP",
+                        help=(
+                            'Disable one or more setups by name. '
+                            'Example: --disable "Liquidity Sweep + FVG" "OB Retracement"'
+                        ))
+    parser.add_argument("--list-setups", action="store_true",
+                        help="Print all available setup names and exit")
     parser.add_argument("--out",       default=None, help="Save trades to CSV path")
     parser.add_argument("--verbose",   action="store_true",
                         help="Print individual trade table")
+
+    # Handle --list-setups before full parse so --ticker/--category aren't required
+    if "--list-setups" in sys.argv:
+        from modules.finance.trader.setups import ALL_SETUP_NAMES
+        print("Available setups:")
+        for name in ALL_SETUP_NAMES:
+            print(f"  - {name}")
+        sys.exit(0)
+
     args = parser.parse_args()
+
+    # --list-setups: just print names and exit
+    if args.list_setups:
+        from modules.finance.trader.setups import ALL_SETUP_NAMES
+        print("Available setups:")
+        for name in ALL_SETUP_NAMES:
+            print(f"  - {name}")
+        sys.exit(0)
 
     today = date.today()
     date_from = (
@@ -584,6 +698,7 @@ def main() -> None:
         step=args.step,
         min_score=args.min_score,
         max_outcome_bars=args.max_bars,
+        disabled_setups=set(args.disable) if args.disable else None,
     )
 
     print_report(report, verbose=args.verbose)

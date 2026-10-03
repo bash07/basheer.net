@@ -1,6 +1,6 @@
 """Confluence scoring engine for the finance/trader module.
 
-Two layers of confluence are computed for each ICT zone (OB midpoint or FVG zone):
+Two layers of confluence are computed for each trading zone (OB midpoint or FVG zone):
 
   Layer A — Classical S/R:
     1. Swing pivot highs/lows (LTF)
@@ -166,7 +166,7 @@ def score_zone(
     sr_levels: list[SRLevel],
     vp: VolumeProfile,
 ) -> ConfluenceReport:
-    """Score an ICT zone against S/R levels and the volume profile.
+    """Score an trading zone against S/R levels and the volume profile.
 
     Args:
         zone_low:  Lower bound of the OB or FVG zone
@@ -277,7 +277,7 @@ def _prior_period_levels(df_htf) -> list[SRLevel]:
     """Prior Daily/Weekly H/L/C as institutional reference levels.
 
     These are the single most important external S/R reference levels
-    in ICT methodology — banks and algos are programmed to these levels.
+    in trading methodology — banks and algos are programmed to these levels.
     """
     if len(df_htf) < 2:
         return []

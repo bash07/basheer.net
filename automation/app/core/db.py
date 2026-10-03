@@ -26,15 +26,22 @@ def init_db() -> None:
     """Create all tables. Call after importing all module models."""
     Base.metadata.create_all(bind=engine)
 
-    # Auto-migration: Add human_approved if missing on existing databases
+    # Auto-migration: Add columns if missing on existing databases.
+    # New tables (positions, trades) are created by create_all() above automatically.
     from sqlalchemy import inspect, text
     inspector = inspect(engine)
     if "trade_signals" in inspector.get_table_names():
         columns = [c["name"] for c in inspector.get_columns("trade_signals")]
-        if "human_approved" not in columns:
-            with engine.connect() as conn:
+        with engine.connect() as conn:
+            if "human_approved" not in columns:
                 conn.execute(text("ALTER TABLE trade_signals ADD COLUMN human_approved BOOLEAN"))
-                conn.commit()
+            if "outcome" not in columns:
+                conn.execute(text("ALTER TABLE trade_signals ADD COLUMN outcome VARCHAR(10) DEFAULT 'OPEN'"))
+            if "outcome_date" not in columns:
+                conn.execute(text("ALTER TABLE trade_signals ADD COLUMN outcome_date DATETIME"))
+            if "realised_rr" not in columns:
+                conn.execute(text("ALTER TABLE trade_signals ADD COLUMN realised_rr FLOAT"))
+            conn.commit()
 
 
 @contextmanager

@@ -1,4 +1,4 @@
-"""Named ICT setup evaluators for the finance/trader module.
+"""Named Trade setup evaluators for the finance/trader module.
 
 Each setup function receives the pre-computed bias, scanner result, and
 confluence data for a ticker and returns a TradeSetup if all gates pass,
@@ -26,15 +26,19 @@ logger = logging.getLogger(__name__)
 # Minimum confluence score to fire an alert
 _MIN_SCORE = 5.0
 # Minimum risk:reward ratio
-_MIN_RR_CONTINUATION = 2.0
-_MIN_RR_SWEEP        = 2.5
+_MIN_RR_CONTINUATION = 1.5
+_MIN_RR_SWEEP        = 2.0
+
+# Set of setup names to skip. Modify at runtime or override in backtest.
+# Example: DISABLED_SETUPS.add("Liquidity Sweep + FVG")
+DISABLED_SETUPS: set[str] = set()
 
 
 # ── Scanner result container ──────────────────────────────────────────────────
 
 @dataclass
 class ScannerResult:
-    """Aggregated output of all ICT scanner primitives for one ticker."""
+    """Aggregated output of all trading scanner primitives for one ticker."""
     structure:  object                # SwingStructure
     bos_list:   list = field(default_factory=list)  # list[BOS]
     ob_list:    list = field(default_factory=list)  # list[OrderBlock]
@@ -50,16 +54,14 @@ def check_all(
     df_htf,
     df_ltf,
 ) -> list:
-    """Run all v1 setups for a ticker and return valid TradeSetup objects.
+    """Run all enabled strategies for a ticker and return valid TradeSetup objects.
 
-    Args:
-        ticker:   Ticker symbol (e.g. "AAPL", "BTC-USD")
-        category: Watchlist category (determines scan mode)
-        df_htf:   HTF OHLCV DataFrame (Weekly / Daily)
-        df_ltf:   LTF OHLCV DataFrame (4H / 1H)
-
-    Returns:
-        List of TradeSetup objects that pass all gates. May be empty.
+    Orchestrates the pipeline:
+      1. Compute HTF bias (shared across all strategies)
+      2. Run LTF scanner (structure, BOS, OBs, FVGs, liquidity)
+      3. Compute Volume Profile + S/R levels
+      4. Build a StrategyContext with all pre-computed data
+      5. Evaluate each enabled strategy against the context
     """
     from .schemas import scan_mode_for
     from .bias import compute_htf_bias
@@ -68,6 +70,8 @@ def check_all(
         find_fvg, find_eqh_eql,
     )
     from .confluence import compute_volume_profile, get_sr_levels
+    from .strategies import get_all_strategies
+    from .strategies.base import StrategyContext
 
     mode = scan_mode_for(category)
 
@@ -79,10 +83,10 @@ def check_all(
         return []
 
     if bias.bias == "neutral":
-        logger.debug("[trader.setups] %s: neutral bias — skipping all setups", ticker)
+        logger.debug("[trader.setups] %s: neutral bias — skipping all strategies", ticker)
         return []
 
-    # ── ICT Scanner ───────────────────────────────────────────────────────────
+    # ── Trading Scanner ───────────────────────────────────────────────────────
     try:
         structure = detect_structure(df_ltf)
         bos_list  = detect_bos_choch(df_ltf, structure)
@@ -93,35 +97,54 @@ def check_all(
         logger.warning("[trader.setups] scanner failed for %s: %s", ticker, e)
         return []
 
-    scanner = ScannerResult(
+    # ── Volume Profile + S/R ──────────────────────────────────────────────────
+    try:
+        vp      = compute_volume_profile(df_ltf, bias.vp_lookback)
+        sr_lvls = get_sr_levels(df_ltf, df_htf, float(df_ltf["Close"].iloc[-1]))
+    except Exception as e:
+        logger.warning("[trader.setups] confluence prep failed for %s: %s", ticker, e)
+        return []
+
+    # ── Build shared context ──────────────────────────────────────────────────
+    ctx = StrategyContext(
+        ticker=ticker,
+        category=category,
+        mode=mode,
+        current_price=float(df_ltf["Close"].iloc[-1]),
+        df_htf=df_htf,
+        df_ltf=df_ltf,
+        bias=bias,
         structure=structure,
         bos_list=bos_list,
         ob_list=ob_list,
         fvg_list=fvg_list,
         liq_list=liq_list,
+        volume_profile=vp,
+        sr_levels=sr_lvls,
     )
 
-    # ── Volume Profile + S/R ──────────────────────────────────────────────────
-    try:
-        vp       = compute_volume_profile(df_ltf, bias.vp_lookback)
-        sr_lvls  = get_sr_levels(df_ltf, df_htf, float(df_ltf["Close"].iloc[-1]))
-    except Exception as e:
-        logger.warning("[trader.setups] confluence prep failed for %s: %s", ticker, e)
-        return []
-
-    # ── Evaluate each setup ───────────────────────────────────────────────────
+    # ── Evaluate each strategy ────────────────────────────────────────────────
     results = []
-    current_price = float(df_ltf["Close"].iloc[-1])
-
-    for fn in (_check_ob_retracement, _check_sweep_fvg, _check_displacement_fvg):
+    for strategy in get_all_strategies():
+        if strategy.name in DISABLED_SETUPS:
+            logger.debug("[trader.setups] %s: '%s' is disabled — skipping",
+                         ticker, strategy.name)
+            continue
         try:
-            setup = fn(ticker, category, mode, bias, scanner, vp, sr_lvls, current_price, df_ltf)
+            setup = strategy.evaluate(ctx)
             if setup is not None:
                 results.append(setup)
         except Exception as e:
-            logger.warning("[trader.setups] %s failed for %s: %s", fn.__name__, ticker, e)
+            logger.warning("[trader.setups] %s failed for %s: %s",
+                           strategy.name, ticker, e)
 
     return results
+
+
+# Registry: (display_name, function) — order determines evaluation priority.
+# Add new setups here; use the same name as setup.setup_name.
+# DEPRECATED: Use strategies/ sub-package instead.
+_SETUP_REGISTRY: list[tuple[str, object]] = []   # populated at bottom of module
 
 
 # ── Setup 1 — OB Retracement ─────────────────────────────────────────────────
@@ -182,16 +205,17 @@ def _check_ob_retracement(
     entry_low  = ob.zone_low
     entry_high = ob.zone_high
     entry_mid  = ob.midpoint
+    atr = _get_atr(df_ltf)
 
     if direction == "long":
-        stop_loss = ob.zone_low * 0.998   # 0.2% below OB low
+        stop_loss = ob.zone_low - (atr * 0.5)   # 0.5 ATR buffer below OB
         # TP1: next swing high above entry
         next_sh = _next_swing_high(scanner.structure, ob.bar_index, df_ltf)
         tp1 = next_sh if next_sh else entry_mid * 1.04
         tp2 = _next_eqh(scanner.liq_list, entry_mid)
         invalidation = f"Candle closes below {ob.zone_low:,.4f} (OB low)"
     else:
-        stop_loss = ob.zone_high * 1.002
+        stop_loss = ob.zone_high + (atr * 0.5)  # 0.5 ATR buffer above OB
         next_sl   = _next_swing_low(scanner.structure, ob.bar_index, df_ltf)
         tp1 = next_sl if next_sl else entry_mid * 0.96
         tp2 = _next_eql(scanner.liq_list, entry_mid)
@@ -274,14 +298,15 @@ def _check_sweep_fvg(
     entry_low  = fvg.gap_low
     entry_high = fvg.gap_high
     entry_mid  = fvg.midpoint
+    atr = _get_atr(df_ltf)
 
     if direction == "long":
-        stop_loss = recent_sweep.price * 0.997  # below the sweep extreme
+        stop_loss = recent_sweep.price - (atr * 0.5)  # 0.5 ATR buffer below sweep
         tp1 = _next_swing_high(scanner.structure, fvg.bar_index, df_ltf) or entry_mid * 1.05
         tp2 = _next_eqh(scanner.liq_list, entry_mid)
         invalidation = f"Candle closes below sweep low {recent_sweep.price:,.4f}"
     else:
-        stop_loss = recent_sweep.price * 1.003
+        stop_loss = recent_sweep.price + (atr * 0.5)  # 0.5 ATR buffer above sweep
         tp1 = _next_swing_low(scanner.structure, fvg.bar_index, df_ltf) or entry_mid * 0.95
         tp2 = _next_eql(scanner.liq_list, entry_mid)
         invalidation = f"Candle closes above sweep high {recent_sweep.price:,.4f}"
@@ -347,14 +372,15 @@ def _check_displacement_fvg(
     entry_low  = fvg.gap_low
     entry_high = fvg.gap_high
     entry_mid  = fvg.midpoint
+    atr = _get_atr(df_ltf)
 
     if direction == "long":
-        stop_loss = fvg.gap_low * 0.997   # beyond full FVG
+        stop_loss = fvg.gap_low - (atr * 0.5)  # 0.5 ATR buffer below FVG
         tp1 = _next_swing_high(scanner.structure, fvg.bar_index, df_ltf) or entry_mid * 1.04
         tp2 = None
         invalidation = f"Candle closes below FVG low {fvg.gap_low:,.4f}"
     else:
-        stop_loss = fvg.gap_high * 1.003
+        stop_loss = fvg.gap_high + (atr * 0.5)  # 0.5 ATR buffer above FVG
         tp1 = _next_swing_low(scanner.structure, fvg.bar_index, df_ltf) or entry_mid * 0.96
         tp2 = None
         invalidation = f"Candle closes above FVG high {fvg.gap_high:,.4f}"
@@ -385,6 +411,136 @@ def _check_displacement_fvg(
         ltf_tf=bias.ltf_tf, htf_tf=bias.htf_tf,
     )
 
+
+# ── Setup 4 — EMA Pullback + Hidden Divergence ───────────────────────────────────
+
+def _check_ema_pullback(
+    ticker, category, mode, bias, scanner: ScannerResult,
+    vp, sr_lvls, current_price: float, df_ltf,
+) -> Optional[object]:
+    """Setup 4: HTF Hidden Divergence bias + LTF 21 EMA pullback/rejection entry.
+
+    Entry Logic:
+      LONG:  Last bar's LOW touched or pierced the 21 EMA AND close is back
+             above the 21 EMA (bullish rejection wick), OR the 8 EMA has
+             crossed above the 21 EMA within the last 5 bars.
+      SHORT: Last bar's HIGH touched or pierced the 21 EMA AND close is back
+             below the 21 EMA (bearish rejection wick), OR the 8 EMA has
+             crossed below the 21 EMA within the last 5 bars.
+
+    Stop Loss:
+      Previous confirmed structural swing low (LONG) or swing high (SHORT).
+      A 0.25 ATR buffer is added beyond the swing level.
+      Rejected if SL distance > 3 × ATR14 (stop is too wide).
+
+    Take Profit:
+      TP1: Next confirmed swing high / low beyond current price.
+      TP2: Second swing high / low beyond TP1 (partial runner).
+
+    Gates:
+      - Any non-neutral bias (strong or moderate)
+      - At least 30 LTF bars for EMA stabilisation
+      - R:R ≥ 1.5
+      - Confluence score ≥ (_MIN_SCORE − 2.0)  [lower bar than Trade setups]
+    """
+    from .confluence import score_zone
+    from .schemas import TradeSetup, ConfluenceReport
+
+    # Accept all non-neutral biases — wider gate than Setup 1
+    if bias.bias == "neutral":
+        return None
+
+    direction = "long" if "bull" in bias.bias else "short"
+
+    if len(df_ltf) < 30:
+        return None
+
+    # ── EMA pullback / cross trigger ────────────────────────────────────────
+    if not _ema_pullback_triggered(df_ltf, direction):
+        logger.debug("[trader.setups] %s EMA Pullback: no trigger on last bar", ticker)
+        return None
+
+    # EMA values for entry zone construction
+    close      = df_ltf["Close"]
+    ema21_val  = float(close.ewm(span=21, adjust=False).mean().iloc[-1])
+    atr        = _get_atr(df_ltf)
+
+    # Entry zone: between current close and the 21 EMA touch level
+    entry_low  = min(current_price, ema21_val)
+    entry_high = max(current_price, ema21_val)
+    entry_mid  = (entry_low + entry_high) / 2
+
+    # ── Stop Loss: previous structural swing ─────────────────────────────────
+    if direction == "long":
+        sl_anchor = _prev_swing_low_price(scanner.structure, current_price)
+        if sl_anchor is None:
+            sl_anchor = entry_mid - (atr * 1.5)   # fallback when no swing low found
+        stop_loss = sl_anchor - (atr * 0.25)      # 0.25 ATR buffer below swing
+        invalidation = f"Close below prev swing low {sl_anchor:,.4f}"
+    else:
+        sl_anchor = _prev_swing_high_price(scanner.structure, current_price)
+        if sl_anchor is None:
+            sl_anchor = entry_mid + (atr * 1.5)
+        stop_loss = sl_anchor + (atr * 0.25)      # 0.25 ATR buffer above swing
+        invalidation = f"Close above prev swing high {sl_anchor:,.4f}"
+
+    # Gate: SL must not be wider than 3 × ATR (avoids terrible R:R)
+    sl_distance = abs(entry_mid - stop_loss)
+    if sl_distance > atr * 3:
+        logger.debug(
+            "[trader.setups] %s EMA Pullback: SL %.4f too wide (%.2f ATR > 3 ATR)",
+            ticker, sl_distance, sl_distance / atr,
+        )
+        return None
+
+    # ── Take Profit: next two structural swings ─────────────────────────────
+    if direction == "long":
+        tp1, tp2 = _next_two_swing_highs(scanner.structure, current_price)
+        if tp1 is None:
+            tp1 = entry_mid * 1.03   # fallback: 3% above entry
+    else:
+        tp1, tp2 = _next_two_swing_lows(scanner.structure, current_price)
+        if tp1 is None:
+            tp1 = entry_mid * 0.97   # fallback: 3% below entry
+
+    # R:R gate
+    rr = _calc_rr(entry_mid, stop_loss, tp1)
+    if rr < 1.5:
+        logger.debug(
+            "[trader.setups] %s EMA Pullback: R:R %.2f < 1.5 — skipping", ticker, rr
+        )
+        return None
+
+    # ── Confluence ──────────────────────────────────────────────────────────
+    # EMA setups aren't price-level zone setups, so lower the confluence gate by 2
+    report = score_zone(entry_low, entry_high, sr_lvls, vp)
+    if report.score < max(0, _MIN_SCORE - 2.0):
+        logger.debug(
+            "[trader.setups] %s EMA Pullback: score %.1f too low", ticker, report.score
+        )
+        return None
+
+    # Cap confidence at "medium" for moderate-bias signals
+    if "moderate" in bias.bias and report.label == "high":
+        report = ConfluenceReport(
+            score=report.score,
+            sr_hits=report.sr_hits,
+            vp_hits=report.vp_hits,
+            poc=report.poc, vah=report.vah, val=report.val,
+            label="medium",
+        )
+
+    return TradeSetup(
+        ticker=ticker, category=category, mode=mode,
+        setup_name="EMA Pullback + Hidden Div",
+        setup_type="continuation",
+        direction=direction, bias=bias, confluence=report,
+        entry_low=entry_low, entry_high=entry_high,
+        stop_loss=stop_loss, tp1=tp1, tp2=tp2,
+        rr_ratio=round(rr, 2),
+        invalidation_note=invalidation,
+        ltf_tf=bias.ltf_tf, htf_tf=bias.htf_tf,
+    )
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
@@ -431,3 +587,143 @@ def _next_eql(liq_list, entry_mid: float) -> Optional[float]:
     """Find the nearest EQL (sell-side liquidity) below current entry."""
     eqls = [l.price for l in liq_list if l.kind == "eql" and l.price < entry_mid and not l.swept]
     return max(eqls) if eqls else None
+
+
+def _get_atr(df, period: int = 14) -> float:
+    """Calculate the Average True Range (ATR) over the last `period` bars."""
+    import pandas as pd
+    if len(df) < period:
+        return float((df["High"].iloc[-1] - df["Low"].iloc[-1]) * 0.5)
+    tr1 = df["High"] - df["Low"]
+    tr2 = (df["High"] - df["Close"].shift(1)).abs()
+    tr3 = (df["Low"] - df["Close"].shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return float(tr.rolling(period).mean().iloc[-1])
+
+
+# ── Setup 4 helper functions ───────────────────────────────────────────────
+
+def _ema_pullback_triggered(df_ltf, direction: str) -> bool:
+    """Return True if the last bar shows an EMA pullback entry signal.
+
+    LONG triggers (either is sufficient):
+      1. Rejection wick:  bar LOW ≤ 21 EMA  AND  bar CLOSE > 21 EMA
+      2. Bullish cross:   8 EMA crossed above 21 EMA in the last 5 bars
+
+    SHORT triggers (either is sufficient):
+      1. Rejection wick:  bar HIGH ≥ 21 EMA  AND  bar CLOSE < 21 EMA
+      2. Bearish cross:   8 EMA crossed below 21 EMA in the last 5 bars
+    """
+    close = df_ltf["Close"]
+    high  = df_ltf["High"]
+    low   = df_ltf["Low"]
+    ema8  = close.ewm(span=8,  adjust=False).mean()
+    ema21 = close.ewm(span=21, adjust=False).mean()
+
+    e21        = float(ema21.iloc[-1])
+    last_close = float(close.iloc[-1])
+    last_high  = float(high.iloc[-1])
+    last_low   = float(low.iloc[-1])
+
+    # Scan last 5 bars for EMA cross (index: -5 to -1)
+    n = min(5, len(df_ltf) - 1)
+
+    if direction == "long":
+        rejection = (last_low <= e21) and (last_close > e21)
+        cross = any(
+            float(ema8.iloc[-i]) > float(ema21.iloc[-i])
+            and float(ema8.iloc[-i - 1]) <= float(ema21.iloc[-i - 1])
+            for i in range(1, n + 1)
+        )
+        return rejection or cross
+    else:
+        rejection = (last_high >= e21) and (last_close < e21)
+        cross = any(
+            float(ema8.iloc[-i]) < float(ema21.iloc[-i])
+            and float(ema8.iloc[-i - 1]) >= float(ema21.iloc[-i - 1])
+            for i in range(1, n + 1)
+        )
+        return rejection or cross
+
+
+def _prev_swing_low_price(structure, current_price: float) -> Optional[float]:
+    """Most recent confirmed swing low strictly below current price (nearest = highest)."""
+    lows = [sp.price for sp in structure.points
+            if sp.kind == "low" and sp.price < current_price]
+    return max(lows) if lows else None
+
+
+def _prev_swing_high_price(structure, current_price: float) -> Optional[float]:
+    """Most recent confirmed swing high strictly above current price (nearest = lowest)."""
+    highs = [sp.price for sp in structure.points
+             if sp.kind == "high" and sp.price > current_price]
+    return min(highs) if highs else None
+
+
+def _next_two_swing_highs(
+    structure, current_price: float
+) -> tuple[Optional[float], Optional[float]]:
+    """Return the two nearest swing highs above current price (TP1, TP2)."""
+    highs = sorted(
+        sp.price for sp in structure.points
+        if sp.kind == "high" and sp.price > current_price
+    )
+    tp1 = highs[0] if highs else None
+    tp2 = highs[1] if len(highs) > 1 else None
+    return tp1, tp2
+
+
+def _next_two_swing_lows(
+    structure, current_price: float
+) -> tuple[Optional[float], Optional[float]]:
+    """Return the two nearest swing lows below current price (TP1, TP2)."""
+    lows = sorted(
+        (sp.price for sp in structure.points
+         if sp.kind == "low" and sp.price < current_price),
+        reverse=True,
+    )
+    tp1 = lows[0] if lows else None
+    tp2 = lows[1] if len(lows) > 1 else None
+    return tp1, tp2
+
+
+# ── Registry population (runs once at import time) ────────────────────────────
+# Order here controls evaluation priority. Add or remove entries to enable /
+# disable setups permanently; use DISABLED_SETUPS for runtime toggling.
+_SETUP_REGISTRY.extend([
+    ("OB Retracement",          _check_ob_retracement),
+    ("Liquidity Sweep + FVG",   _check_sweep_fvg),
+    ("Displacement + FVG",      _check_displacement_fvg),
+    ("EMA Pullback + Hidden Div", _check_ema_pullback),
+])
+
+def _get_all_setup_names() -> list[str]:
+    """Return all strategy names from auto-discovered strategies."""
+    try:
+        from .strategies import get_all_strategies
+        return [s.name for s in get_all_strategies()]
+    except Exception:
+        # Fallback for edge cases (e.g. during import of strategies/)
+        return [name for name, _ in _SETUP_REGISTRY]
+
+ALL_SETUP_NAMES: list[str] = _get_all_setup_names()
+
+
+# ── Auto-load disabled setups from config (runs once at import time) ──────────
+# This means ALL callers (jobs.py, commands.py, backtest.py) automatically
+# respect the saved config without any extra wiring.
+def _load_config_into_disabled() -> None:
+    try:
+        from .manage import get_disabled_setups
+        saved = get_disabled_setups()
+        DISABLED_SETUPS.update(saved)
+        if saved:
+            logger.debug(
+                "[trader.setups] Loaded %d disabled setup(s) from config: %s",
+                len(saved), ", ".join(sorted(saved)),
+            )
+    except Exception:
+        pass   # config missing or corrupt — start with all enabled
+
+
+_load_config_into_disabled()

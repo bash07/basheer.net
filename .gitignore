@@ -21,3 +21,5 @@ venv/
 
 # Node (if ever needed)
 node_modules/
+
+.backtest_cache/

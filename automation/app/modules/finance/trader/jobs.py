@@ -4,7 +4,7 @@ Jobs:
     scan_all_tickers — every 30 minutes (market-hours aware per category).
         1. Load all watchlist tickers grouped into swing / intraday modes.
         2. Fetch HTF + LTF OHLCV for each ticker (via shared cache).
-        3. Run check_all() to evaluate all v1 ICT setups.
+        3. Run check_all() to evaluate all v1 Trade setups.
         4. Deduplicate against trade_signals table (24-hour window).
         5. Persist new signals and send a Telegram digest.
 """
@@ -29,7 +29,7 @@ _RESAMPLE_4H = True
 
 
 async def scan_all_tickers() -> None:
-    """Proactive ICT setup scanner — called every 30 minutes by APScheduler."""
+    """Proactive Trade setup scanner — called every 30 minutes by APScheduler."""
     from sqlalchemy import select
     from core.db import get_db
     from modules.finance.watchlist.models import WatchlistEntry
@@ -74,40 +74,50 @@ async def scan_all_tickers() -> None:
     )
 
     # 4. Evaluate setups for each ticker
-    new_setups = []
+    new_setups   = []   # list of (TradeSetup, ltf_df)
 
-    for entry in swing_tickers + intraday_tickers:
-        ohlcv_map = swing_ohlcv if scan_mode_for(entry.category) == "swing" else intraday_ohlcv
-        htf_df = ohlcv_map.get(f"{entry.symbol}:htf")
-        ltf_df = ohlcv_map.get(f"{entry.symbol}:ltf")
+    with get_db() as db:
+        for entry in swing_tickers + intraday_tickers:
+            ohlcv_map = swing_ohlcv if scan_mode_for(entry.category) == "swing" else intraday_ohlcv
+            htf_df = ohlcv_map.get(f"{entry.symbol}:htf")
+            ltf_df = ohlcv_map.get(f"{entry.symbol}:ltf")
 
-        if htf_df is None or ltf_df is None or htf_df.empty or ltf_df.empty:
-            logger.debug("[trader] %s: missing OHLCV data, skipping", entry.symbol)
-            continue
-
-        try:
-            setups = check_all(entry.symbol, entry.category, htf_df, ltf_df)
-        except Exception as e:
-            logger.warning("[trader] check_all failed for %s: %s", entry.symbol, e)
-            continue
-
-        for setup in setups:
-            key = setup.to_dedup_key()
-            if key in dedup_keys:
-                logger.debug("[trader] %s: dedup hit for %s — skipping", entry.symbol, setup.setup_name)
+            if htf_df is None or ltf_df is None or htf_df.empty or ltf_df.empty:
+                logger.debug("[trader] %s: missing OHLCV data, skipping", entry.symbol)
                 continue
-            new_setups.append(setup)
-            dedup_keys.add(key)  # prevent intra-scan duplicates
+
+            # Update live outcome of previously fired setups
+            _update_open_trades_for_ticker(entry.symbol, ltf_df, db)
+
+            try:
+                setups = check_all(entry.symbol, entry.category, htf_df, ltf_df)
+            except Exception as e:
+                logger.warning("[trader] check_all failed for %s: %s", entry.symbol, e)
+                continue
+
+            for setup in setups:
+                key = setup.to_dedup_key()
+                if key in dedup_keys:
+                    logger.debug("[trader] %s: dedup hit for %s — skipping", entry.symbol, setup.setup_name)
+                    continue
+                new_setups.append((setup, ltf_df))   # keep ltf_df for chart generation
+                dedup_keys.add(key)  # prevent intra-scan duplicates
+        
+        db.commit() # commit outcome updates
 
     if not new_setups:
         logger.debug("[trader] scan_all_tickers: no new setups this cycle")
         return
 
-    # 5. Persist new signals
+    logger.info("[trader] Firing %d new setup alert(s)", len(new_setups))
+
+    # 5. Persist new signals and collect DB ids for button callbacks
     now = datetime.now(timezone.utc)
+    signal_rows   = []   # list of (TradeSignal db row, ltf_df)
+
     with get_db() as db:
-        for setup in new_setups:
-            db.add(TradeSignal(
+        for setup, ltf_df in new_setups:
+            row = TradeSignal(
                 ticker=setup.ticker,
                 category=setup.category,
                 mode=setup.mode,
@@ -124,17 +134,59 @@ async def scan_all_tickers() -> None:
                 setup_json=setup.to_db_json(),
                 fired_at=now,
                 notified=True,
-            ))
+            )
+            db.add(row)
+            db.flush()           # assigns row.id without committing
+            signal_rows.append((setup, row.id, ltf_df))
+        db.commit()
 
-    logger.info("[trader] Firing %d new setup alert(s)", len(new_setups))
-
-    # 6. Send Telegram alerts
+    # 6. Send Telegram alerts as charts with Approve / Dismiss buttons
     # Sort by confidence score descending so best setups arrive first
-    new_setups.sort(key=lambda s: s.confluence.score, reverse=True)
+    signal_rows.sort(key=lambda t: t[0].confluence.score, reverse=True)
 
-    for setup in new_setups:
+    for setup, signal_id, ltf_df in signal_rows:
         try:
-            await notify(setup.to_telegram_text(), parse_mode="Markdown")
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            from modules.finance._shared.notify import notify_photo, notify
+            from .chart import generate_chart
+
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "✅ Approve",
+                        callback_data=f"trade:approve:{signal_id}",
+                    ),
+                    InlineKeyboardButton(
+                        "❌ Dismiss",
+                        callback_data=f"trade:dismiss:{signal_id}",
+                    ),
+                ]
+            ])
+
+            # Generate annotated chart PNG
+            png_path = await loop.run_in_executor(
+                None, generate_chart, setup, ltf_df
+            )
+
+            if png_path:
+                # Send chart image + buttons
+                caption = setup.to_telegram_text()
+                # Telegram captions max 1024 chars — truncate gracefully
+                if len(caption) > 1024:
+                    caption = caption[:1020] + "…"
+                await notify_photo(
+                    png_path,
+                    caption=caption,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard,
+                )
+            else:
+                # Chart failed — fall back to plain text with buttons
+                await notify(
+                    setup.to_telegram_text(),
+                    parse_mode="Markdown",
+                )
+
             await asyncio.sleep(_BATCH_PAUSE)
         except Exception as e:
             logger.error("[trader] Failed to notify for %s: %s", setup.ticker, e)
@@ -143,89 +195,108 @@ async def scan_all_tickers() -> None:
 # ── OHLCV fetching ────────────────────────────────────────────────────────────
 
 def _fetch_all_ohlcv(entries: list, mode: str) -> dict:
-    """Synchronous batch OHLCV fetch — runs inside an executor thread.
+    """Fetch HTF + LTF OHLCV for all entries using the configured DataProvider.
 
     Returns:
         Dict with keys "{symbol}:htf" and "{symbol}:ltf" → DataFrame
     """
-    import yfinance as yf
-    from modules.finance._shared.cache import ticker_cache
+    from .data import get_provider
+    from .schemas import timeframes_for
 
     if not entries:
         return {}
 
-    htf_tf, ltf_tf = ("1wk", "4h") if mode == "swing" else ("1d", "1h")
-    htf_period, htf_interval = _OHLCV_PARAMS[htf_tf]
-    ltf_period, ltf_interval = _OHLCV_PARAMS[ltf_tf]
-
+    htf_tf, ltf_tf, _ = timeframes_for(mode)
+    provider = get_provider()
     symbols = [e.symbol for e in entries]
-    result  = {}
 
-    # --- HTF ---
-    _fetch_tf_batch(symbols, htf_period, htf_interval, htf_tf, result, cache_key_suffix="htf")
+    # yfinance periods for each TF
+    _PERIODS = {
+        "1wk": "2y",
+        "1d":  "1y",
+        "4h":  "60d",
+        "1h":  "30d",
+    }
 
-    # --- LTF ---
-    # yfinance doesn't support 4h natively; we fetch 1h and resample
-    _fetch_tf_batch(symbols, ltf_period, ltf_interval, ltf_tf, result,
-                    cache_key_suffix="ltf", resample_to="4h" if mode == "swing" else None)
+    htf_period = _PERIODS.get(htf_tf, "1y")
+    ltf_period = _PERIODS.get(ltf_tf, "30d")
+    # yfinance doesn't support 4h; fetch 1h and resample
+    ltf_fetch_interval = "1h" if ltf_tf == "4h" else ltf_tf
+    ltf_resample = "4h" if ltf_tf == "4h" else None
+
+    result = {}
+    htf_map = provider.fetch_ohlcv_batch(symbols, htf_tf, period=htf_period)
+    ltf_map = provider.fetch_ohlcv_batch(symbols, ltf_fetch_interval, period=ltf_period,
+                                         resample_to=ltf_resample)
+
+    for sym in symbols:
+        if sym in htf_map:
+            result[f"{sym}:htf"] = htf_map[sym]
+        if sym in ltf_map:
+            result[f"{sym}:ltf"] = ltf_map[sym]
 
     return result
 
 
+# NOTE: _fetch_tf_batch is kept below for reference; all active fetching now
+# goes through DataProvider.fetch_ohlcv_batch() via _fetch_all_ohlcv above.
 def _fetch_tf_batch(symbols: list, period: str, interval: str, tf_label: str,
                     result: dict, cache_key_suffix: str, resample_to: str | None = None) -> None:
-    """Fetch OHLCV for a list of symbols at one timeframe and populate result dict."""
-    import yfinance as yf
-    from modules.finance._shared.cache import ticker_cache
+    """Deprecated: use get_provider().fetch_ohlcv_batch() instead."""
+    import warnings
+    warnings.warn(
+        "_fetch_tf_batch is deprecated; use get_provider().fetch_ohlcv_batch()",
+        DeprecationWarning,
+        stacklevel=2,
+    )
 
-    uncached = []
-    for sym in symbols:
-        key = f"trader_ohlcv:{sym}:{tf_label}"
-        cached = ticker_cache.get(key)
-        if cached is not None:
-            result[f"{sym}:{cache_key_suffix}"] = cached
-        else:
-            uncached.append(sym)
 
-    if not uncached:
-        return
+def _update_open_trades_for_ticker(ticker: str, ltf_df, db) -> None:
+    """Evaluate OPEN trades for a ticker against new price bars and update outcome."""
+    from sqlalchemy import select
+    from .models import TradeSignal
+    import pandas as pd
 
-    try:
-        raw = yf.download(
-            tickers=uncached,
-            period=period,
-            interval=interval,
-            progress=False,
-            auto_adjust=True,
-            group_by="ticker" if len(uncached) > 1 else "column",
+    open_trades = db.execute(
+        select(TradeSignal).where(
+            TradeSignal.ticker == ticker,
+            TradeSignal.outcome == "OPEN"
         )
-    except Exception as e:
-        logger.error("[trader] yfinance batch download failed (%s %s): %s", period, interval, e)
+    ).scalars().all()
+
+    if not open_trades:
         return
 
-    for sym in uncached:
+    # Ensure index is timezone-aware if fired_at is, or naive if not
+    for trade in open_trades:
         try:
-            df = raw[sym] if len(uncached) > 1 else raw
-            if hasattr(df.columns, "levels"):
-                df.columns = df.columns.get_level_values(0)
-            df.columns = [c.title() for c in df.columns]
-            df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
-            if df.empty:
-                continue
+            fired_at = trade.fired_at.replace(tzinfo=ltf_df.index.tz) if ltf_df.index.tz is not None else trade.fired_at.replace(tzinfo=None)
+            future_bars = ltf_df[ltf_df.index > fired_at]
+            
+            for ts, row in future_bars.iterrows():
+                hi = float(row["High"])
+                lo = float(row["Low"])
+                
+                tp_hit = False
+                sl_hit = False
+                
+                if trade.direction == "long":
+                    if hi >= trade.tp1: tp_hit = True
+                    if lo <= trade.stop_loss: sl_hit = True
+                else:
+                    if lo <= trade.tp1: tp_hit = True
+                    if hi >= trade.stop_loss: sl_hit = True
+                    
+                if tp_hit and sl_hit:
+                    # Ambiguous candle: assume whichever is closer gets hit first
+                    tp_hit = abs(trade.entry_mid - trade.tp1) < abs(trade.entry_mid - trade.stop_loss)
+                    sl_hit = not tp_hit
 
-            # Resample 1H → 4H for swing LTF
-            if resample_to == "4h":
-                df = df.resample("4h").agg({
-                    "Open":   "first",
-                    "High":   "max",
-                    "Low":    "min",
-                    "Close":  "last",
-                    "Volume": "sum",
-                }).dropna()
-
-            cache_key = f"trader_ohlcv:{sym}:{tf_label}"
-            ticker_cache.set(cache_key, df)
-            result[f"{sym}:{cache_key_suffix}"] = df
-
+                if tp_hit or sl_hit:
+                    trade.outcome = "WIN" if tp_hit else "LOSS"
+                    # Safe conversion to naive python datetime for DB
+                    trade.outcome_date = ts.to_pydatetime().replace(tzinfo=timezone.utc) if hasattr(ts, "to_pydatetime") else datetime.now(timezone.utc)
+                    trade.realised_rr = trade.rr_ratio if tp_hit else -1.0
+                    break
         except Exception as e:
-            logger.warning("[trader] Failed to parse %s from batch (%s): %s", sym, tf_label, e)
+            logger.warning("[trader] Failed to update outcome for trade %d: %s", trade.id, e)

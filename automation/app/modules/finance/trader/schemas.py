@@ -1,6 +1,6 @@
 """Pydantic / dataclass schemas for the finance/trader module.
 
-Internal ICT primitives (OrderBlock, FVG, etc.) use plain dataclasses for speed.
+Internal Trade primitives (OrderBlock, FVG, etc.) use plain dataclasses for speed.
 The top-level TradeSetup uses Pydantic for JSON serialisation into SQLite.
 
 Import pattern:
@@ -35,11 +35,27 @@ def scan_mode_for(category: str) -> str:
     return "swing"
 
 
+# Timeframe config per scan mode.
+# Mutable at runtime — add new modes or override existing ones without editing
+# this file. Example (in your startup / strategy file):
+#
+#   from modules.finance.trader.schemas import TIMEFRAME_CONFIGS
+#   TIMEFRAME_CONFIGS["scalp"] = {"htf": "1h", "ltf": "15m", "vp_lookback": 30}
+#
+TIMEFRAME_CONFIGS: dict[str, dict] = {
+    "intraday": {"htf": "1d",  "ltf": "1h",  "vp_lookback": 60},
+    "swing":    {"htf": "1wk", "ltf": "4h",  "vp_lookback": 100},
+}
+
+
 def timeframes_for(mode: str) -> tuple[str, str, int]:
-    """Return (htf, ltf, vp_lookback) for a given scan mode."""
-    if mode == "intraday":
-        return "1d", "1h", 60
-    return "1wk", "4h", 100
+    """Return (htf_interval, ltf_interval, vp_lookback) for a given scan mode.
+
+    Falls back to 'swing' config for unknown modes.
+    To add a new mode, update TIMEFRAME_CONFIGS at startup.
+    """
+    cfg = TIMEFRAME_CONFIGS.get(mode, TIMEFRAME_CONFIGS["swing"])
+    return cfg["htf"], cfg["ltf"], cfg["vp_lookback"]
 
 
 # ── HTF Bias ──────────────────────────────────────────────────────────────────
@@ -60,7 +76,7 @@ class BiasResult(BaseModel):
     bias_notes: str = ""
 
 
-# ── ICT Primitives (dataclasses for speed) ───────────────────────────────────
+# ── Trade Primitives (dataclasses for speed) ───────────────────────────────────
 
 @dataclass
 class SwingPoint:
@@ -90,7 +106,7 @@ class BOS:
 
 @dataclass
 class OrderBlock:
-    """ICT Order Block — the last opposing candle before a displacement move."""
+    """Trade Order Block — the last opposing candle before a displacement move."""
     bar_index: int
     direction: str              # "bullish" (OB is bearish candle) | "bearish"
     zone_low: float
@@ -159,7 +175,7 @@ class VolumeProfile:
 
 
 class ConfluenceReport(BaseModel):
-    """Confluence scoring result for a single ICT zone."""
+    """Confluence scoring result for a single trading zone."""
     score: float = 0.0              # 0–10 total
     sr_hits: list[str] = Field(default_factory=list)
     vp_hits: list[str] = Field(default_factory=list)
@@ -178,7 +194,7 @@ class ConfluenceReport(BaseModel):
 # ── Final TradeSetup ──────────────────────────────────────────────────────────
 
 class TradeSetup(BaseModel):
-    """A fully-formed ICT trade setup with bias + confluence scoring."""
+    """A fully-formed Trade trade setup with bias + confluence scoring."""
 
     # Identification
     ticker: str
@@ -232,7 +248,7 @@ class TradeSetup(BaseModel):
         tp1_pct = abs(self.tp1 - self.entry_mid) / self.entry_mid * 100
 
         lines = [
-            f"🎯 *ICT SETUP DETECTED{type_tag}*",
+            f"🎯 *Trade SETUP DETECTED{type_tag}*",
             "━━━━━━━━━━━━━━━━━━━━",
             f"{dir_emoji} *{self.ticker}* — {self.setup_name} \\[{self.mode.upper()}\\]",
             f"Direction: *{dir_label}*  |  {conf_emoji} Confidence: *{self.confluence.label.upper()}* "

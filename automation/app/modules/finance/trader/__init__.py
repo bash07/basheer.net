@@ -7,7 +7,7 @@ Scheduled: scan_all_tickers every 30 minutes (market-hours aware)
 from __future__ import annotations
 
 NAME        = "trader"
-DESCRIPTION = "🎯 ICT Trader — Signal scanner with RSI hidden divergence bias + confluence scoring"
+DESCRIPTION = "🎯 Trading System — Signal scanner with RSI hidden divergence bias + confluence scoring"
 
 
 def register(bot_app, scheduler, authorized) -> dict:
@@ -16,7 +16,7 @@ def register(bot_app, scheduler, authorized) -> dict:
     Called once at startup by the module registry. Adds Telegram command
     handlers and an APScheduler job for the 30-minute scan cycle.
     """
-    from telegram.ext import CommandHandler
+    from telegram.ext import CommandHandler, CallbackQueryHandler
     from apscheduler.triggers.interval import IntervalTrigger
 
     # Import models so SQLAlchemy creates the table on startup
@@ -27,6 +27,8 @@ def register(bot_app, scheduler, authorized) -> dict:
         setups_command,
         traderbias_command,
         confluence_command,
+        approve_dismiss_callback,
+        performance_command,
     )
     from .jobs import scan_all_tickers
 
@@ -35,6 +37,15 @@ def register(bot_app, scheduler, authorized) -> dict:
     bot_app.add_handler(CommandHandler("setups",      setups_command,     filters=authorized))
     bot_app.add_handler(CommandHandler("traderbias",  traderbias_command, filters=authorized))
     bot_app.add_handler(CommandHandler("confluence",  confluence_command, filters=authorized))
+    bot_app.add_handler(CommandHandler("performance", performance_command, filters=authorized))
+
+    # Inline button callbacks (no auth filter — callback_query already scoped by chat_id in bot.py)
+    bot_app.add_handler(
+        CallbackQueryHandler(
+            approve_dismiss_callback,
+            pattern=r"^trade:(approve|dismiss):\d+$",
+        )
+    )
 
     # ── Scheduled Job — every 30 minutes ────────────────────────────────────
     scheduler.add_job(
@@ -47,11 +58,12 @@ def register(bot_app, scheduler, authorized) -> dict:
     return {
         "name":        NAME,
         "description": DESCRIPTION,
-        "commands":    ["scan", "setups", "traderbias", "confluence"],
+        "commands":    ["scan", "setups", "traderbias", "confluence", "performance"],
         "help": [
-            "`/scan [ticker]`       — Force ICT scan on full watchlist or one ticker",
+            "`/scan [ticker]`       — Force trade scan on full watchlist or one ticker",
             "`/setups`              — List active setups from the last 48 hours",
             "`/traderbias <ticker>` — HTF RSI hidden divergence bias breakdown",
             "`/confluence <ticker>` — Volume profile (POC/VAH/VAL) + S/R levels",
+            "`/performance`         — Show live performance statistics per strategy",
         ],
     }

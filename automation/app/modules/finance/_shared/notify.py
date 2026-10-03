@@ -33,8 +33,16 @@ async def notify_photo(
     photo_path: str,
     caption: Optional[str] = None,
     parse_mode: str = "Markdown",
+    reply_markup=None,          # Optional InlineKeyboardMarkup for approve/dismiss buttons
 ) -> None:
-    """Send a photo file to the configured Telegram chat, then delete the temp file."""
+    """Send a photo file to the configured Telegram chat, then delete the temp file.
+
+    Args:
+        photo_path:   Absolute path to the PNG file to send.
+        caption:      Optional caption text (Markdown supported).
+        parse_mode:   Telegram parse mode ("Markdown" | "HTML").
+        reply_markup: Optional InlineKeyboardMarkup with interactive buttons.
+    """
     import os
     from core.bot import bot_app
     from config import config
@@ -45,6 +53,7 @@ async def notify_photo(
                 photo=f,
                 caption=caption,
                 parse_mode=parse_mode,
+                reply_markup=reply_markup,
             )
     except Exception as e:
         logger.error("[finance.notify] Failed to send photo: %s", e, exc_info=True)

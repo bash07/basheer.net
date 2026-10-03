@@ -1,4 +1,4 @@
-"""ICT concept detectors for the finance/trader module.
+"""Trade concept detectors for the finance/trader module.
 
 All detectors operate on the LTF DataFrame (4H for swing, 1H for intraday).
 All pandas/numpy/scipy imports are LAZY — never at module level.

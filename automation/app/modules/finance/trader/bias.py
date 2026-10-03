@@ -6,18 +6,22 @@ Daily for intraday/crypto) using three RSI-derived signals:
   1. RSI Regime    — Is RSI consistently above or below 50? (Cardwell zones)
   2. Hidden Div    — Price HL + RSI LL (bull) / Price LH + RSI HH (bear)
                      Confirms trend CONTINUATION (opposite of regular divergence)
-  3. Failure Swing — v1.1; only used for reversal setups (Setup 4)
+  3. Failure Swing — v1.1; only used for reversal setups
 
 All pandas/numpy/scipy imports are LAZY — never at module level.
 
 Usage:
     result = compute_htf_bias(df_weekly, mode="swing")
-    if result.bias in ("strong_bull", "strong_bear"):
-        ...
+
+    # Use a custom bias provider:
+    from modules.finance.trader.bias import register_bias_provider, MACDBiasProvider
+    register_bias_provider("macd", MACDBiasProvider())
+    result = compute_htf_bias(df_daily, mode="intraday", provider="macd")
 """
 from __future__ import annotations
 
 import logging
+from abc import ABC, abstractmethod
 
 from .schemas import BiasResult, timeframes_for
 
@@ -32,45 +36,101 @@ _HD_ORDER          = 5    # argrelextrema half-width (bars) for swing detection
 _HD_LOOKBACK       = 60   # bars scanned for hidden divergence pivots
 
 
+# ── BiasProvider Interface ─────────────────────────────────────────────────────
+
+class BiasProvider(ABC):
+    """Abstract base class for HTF bias engines.
+
+    To add a new bias method (e.g. MACD, ADX, MA slope):
+      1. Subclass BiasProvider
+      2. Implement compute(df_htf, mode) → BiasResult
+      3. Register it: register_bias_provider("my_key", MyProvider())
+      4. Use it:      compute_htf_bias(df, mode, provider="my_key")
+    """
+
+    @abstractmethod
+    def compute(self, df_htf, mode: str) -> BiasResult:
+        """Compute directional bias from an HTF OHLCV DataFrame.
+
+        Args:
+            df_htf: pd.DataFrame with Open/High/Low/Close/Volume and DatetimeIndex.
+            mode:   \"swing\" | \"intraday\" — determines HTF/LTF label strings.
+
+        Returns:
+            BiasResult with .bias in:
+                \"strong_bull\" | \"strong_bear\" | \"moderate_bull\" |
+                \"moderate_bear\" | \"neutral\"
+        """
+        ...
+
+
+# Provider registry — keyed by name string
+_BIAS_PROVIDERS: dict[str, BiasProvider] = {}   # populated below after RSIBiasProvider
+
+
+def register_bias_provider(name: str, provider: BiasProvider) -> None:
+    """Register a custom BiasProvider under a given name."""
+    _BIAS_PROVIDERS[name] = provider
+    logger.debug("[trader.bias] Registered BiasProvider: %s", name)
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def compute_htf_bias(df_htf, mode: str) -> BiasResult:
+def compute_htf_bias(df_htf, mode: str, provider: str = "rsi") -> BiasResult:
     """Compute directional bias from an HTF OHLCV DataFrame.
 
     Args:
-        df_htf: pandas DataFrame (DatetimeIndex, Open/High/Low/Close/Volume)
-                Needs >= 60 rows for meaningful signals.
-        mode:   "swing" | "intraday"  — determines HTF/LTF label strings only.
+        df_htf:    pandas DataFrame (DatetimeIndex, Open/High/Low/Close/Volume)
+                   Needs >= 60 rows for meaningful signals.
+        mode:      \"swing\" | \"intraday\"  — determines HTF/LTF label strings only.
+        provider:  Name of the registered BiasProvider to use. Default: \"rsi\".
 
     Returns:
         BiasResult with .bias in:
-            "strong_bull" | "strong_bear" | "moderate_bull" |
-            "moderate_bear" | "neutral"
+            \"strong_bull\" | \"strong_bear\" | \"moderate_bull\" |
+            \"moderate_bear\" | \"neutral\"
     """
-    htf_tf, ltf_tf, vp_lookback = timeframes_for(mode)
-    close = df_htf["Close"]
+    p = _BIAS_PROVIDERS.get(provider)
+    if p is None:
+        raise ValueError(
+            f"Unknown BiasProvider '{provider}'. "
+            f"Available: {list(_BIAS_PROVIDERS.keys())}"
+        )
+    return p.compute(df_htf, mode)
 
-    rsi_series = _rsi(close, _RSI_PERIOD)
-    rsi_val    = float(rsi_series.iloc[-1]) if len(rsi_series) else 50.0
 
-    regime   = _rsi_regime(rsi_series)
-    hd       = _hidden_divergence(close, rsi_series)
-    # failure_swing reserved for v1.1 — always "none" in v1
+# ── RSI Bias Provider (default) ───────────────────────────────────────────────
 
-    bias, notes = _combine(regime, hd, rsi_val)
+class RSIBiasProvider(BiasProvider):
+    """Default bias engine: RSI Cardwell regime + hidden divergence."""
 
-    return BiasResult(
-        mode=mode,
-        htf_tf=htf_tf,
-        ltf_tf=ltf_tf,
-        vp_lookback=vp_lookback,
-        rsi_value=round(rsi_val, 2),
-        regime=regime,
-        hidden_div=hd,
-        failure_swing="none",
-        bias=bias,
-        bias_notes=notes,
-    )
+    def compute(self, df_htf, mode: str) -> BiasResult:
+        htf_tf, ltf_tf, vp_lookback = timeframes_for(mode)
+        close = df_htf["Close"]
+
+        rsi_series = _rsi(close, _RSI_PERIOD)
+        rsi_val    = float(rsi_series.iloc[-1]) if len(rsi_series) else 50.0
+
+        regime      = _rsi_regime(rsi_series)
+        hd          = _hidden_divergence(close, rsi_series)
+        bias, notes = _combine(regime, hd, rsi_val)
+
+        return BiasResult(
+            mode=mode,
+            htf_tf=htf_tf,
+            ltf_tf=ltf_tf,
+            vp_lookback=vp_lookback,
+            rsi_value=round(rsi_val, 2),
+            regime=regime,
+            hidden_div=hd,
+            failure_swing="none",
+            bias=bias,
+            bias_notes=notes,
+        )
+
+
+# Register the default RSI provider so compute_htf_bias() works out of the box
+register_bias_provider("rsi", RSIBiasProvider())
 
 
 # ── Step 1 — RSI Regime ───────────────────────────────────────────────────────
