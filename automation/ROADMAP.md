@@ -16,9 +16,10 @@ app/modules/
 │   ├── analytics/     🗺 Planned
 │   └── maintenance/   🗺 Planned
 ├── finance/           💹 Market tracking, analysis & portfolio
-│   ├── watchlist/     🗺 Planned
-│   ├── technical/     🗺 Planned
-│   ├── fundamental/   🗺 Planned
+│   ├── watchlist/     ✅ Active
+│   ├── technical/     ✅ Active
+│   ├── fundamental/   ✅ Active
+│   ├── trader/        ✅ Active
 │   ├── crypto/        🗺 Planned
 │   ├── portfolio/     🗺 Planned
 │   ├── reports/       🗺 Planned
@@ -179,7 +180,7 @@ Charts are rendered with **mplfinance + matplotlib** and delivered as Telegram i
 
 ---
 
-### 🗺 `finance/watchlist/` — Ticker Registry (Planned)
+### ✅ `finance/watchlist/` — Ticker Registry (Active)
 
 **Goal:** A central, categorized ticker store that all other `finance/` submodules read from.
 Supports dynamic add/remove via Telegram without restarting the platform.
@@ -202,36 +203,37 @@ Supports dynamic add/remove via Telegram without restarting the platform.
   (ticker, condition `>` or `<`, threshold, triggered flag)
 - **Data Cache** — 5-min TTL in-memory cache for yfinance responses; shared by all
   `finance/` submodules to avoid redundant HTTP calls
+- **Daily Summary Job** — Morning digest at 08:00 with market overview and technical alert digest
 
 **Telegram Commands:**
 - `/watch <ticker> [--cat crypto]` — Add a ticker to the watchlist (category auto-detected or overridden)
 - `/unwatch <ticker>` — Remove a ticker
 - `/watchlist [category]` — List all tracked tickers, optionally filtered by category
+- `/price <ticker>` / `/prices` — Fetch live quotes across watchlist
 - `/alert <ticker> <condition> <price>` — Set a price alert (e.g., `/alert AAPL > 200`)
 - `/alerts` — List all active price alerts
 - `/delalert <id>` — Delete a price alert
 
 ---
 
-### 🗺 `finance/technical/` — Technical Analysis Engine (Planned)
+### ✅ `finance/technical/` — Technical Analysis Engine (Active)
 
 **Goal:** On-demand and scheduled TA for any watchlisted ticker. Generates chart images
 and text summaries delivered directly to Telegram. Also proactively fires alerts when
 significant signals are detected.
 
 **Indicators Computed:**
-- **RSI (14)** — Overbought/oversold classification (>70 / <30)
-- **EMAs** — 21, 50, 100, 200 period; crossover detection (golden cross, death cross)
-- **Volume** — Volume spike detection vs. 20-day average
-- **Trend** — Price position relative to EMA stack (bullish alignment / bearish alignment)
+- **RSI (14)** — Multi-extrema regular & hidden divergence detection (NumPy-native peak detection via `_shared/extrema.py`), swing validation guards, boundary-crossing stateful alerts (`oversold_in`, `overbought_in`, `exit`), and potential/prospective setups (`potential_signals`).
+- **EMAs** — 21, 50, 100, 200 period; crossover detection (golden cross, death cross).
+- **Volume** — Volume spike detection vs. 20-day average.
+- **Trend** — Price position relative to EMA stack (bullish alignment / bearish alignment).
 
 **Chart Output:** Candlestick chart (mplfinance) with EMA overlays, RSI sub-panel, and
 volume bars. Sent as a `.png` image to Telegram.
 
-**Proactive Signal Alerts (background job every 30 min):**
-- EMA crossover detected (e.g., 21 crosses above 50 EMA → "Bullish crossover alert")
-- RSI enters/exits extreme zones (>70 or <30)
-- Volume spike ≥ 2× the 20-day average
+**Proactive Signal Alerts & Morning Digest:**
+- Stateful boundary-crossing alerts: fires only on entering/exiting extreme zones or confirmed swing divergences (no repetitive spam).
+- Daily 08:00 morning digest incorporates 24-hour technical alert history (`SignalLog`).
 
 **Telegram Commands:**
 - `/ta <ticker> [--tf 1d|1wk|1mo]` — Run full TA and send chart + summary
@@ -241,17 +243,18 @@ volume bars. Sent as a `.png` image to Telegram.
 
 **Scheduled Jobs:**
 - Every 30 min (market hours) — scan all watchlisted tickers for proactive signals
+- Daily 08:00 — morning watchlist brief + 24h TA alert digest
 
 ---
 
-### 🗺 `finance/fundamental/` — Fundamental Analysis (Planned)
+### ✅ `finance/fundamental/` — Fundamental Analysis (Active)
 
 **Goal:** Screen and analyse stocks against configurable investment frameworks.
-The first framework implemented is **Benjamin Graham's value investing method**.
-Additional methods (e.g., Peter Lynch, Buffett checklist, DCF) are added as plug-in
-strategy classes — the `FinancialAnalystAgent` picks the right one based on your instruction.
+The framework implemented is **Benjamin Graham's value investing method**.
+Additional methods (e.g., Peter Lynch, Buffett checklist, DCF) are plug-in
+strategy classes with LLM synthesis via `FinancialAnalystAgent`.
 
-**Benjamin Graham Method (v1 — default):**
+**Benjamin Graham Method (Active default):**
 | Criterion | Threshold |
 |---|---|
 | P/E Ratio | < 15 |
@@ -275,6 +278,18 @@ strategy classes — the `FinancialAnalystAgent` picks the right one based on yo
 **Scheduled Jobs:**
 - Every Sunday 8 AM — run Graham screen on all watched stocks, send ranked results
 - 3 days before any tracked earnings date — send an earnings alert
+
+---
+
+### ✅ `finance/trader/` — Algorithmic Trading & OMS (Active)
+
+**Goal:** Complete paper and live execution system with strict risk management, position sizing, kill switches, and backtesting.
+
+**Features:**
+- Modular OMS supporting paper trading and live broker execution.
+- Strict multi-layered risk management (max drawdowns, max order sizing, circuit breakers).
+- Signal engine ingesting technical triggers into order placement.
+- Complete backtesting pipeline with Sharpe, Sortino, max drawdown, and trade logs.
 
 ---
 

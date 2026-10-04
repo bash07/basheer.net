@@ -1,5 +1,14 @@
 # Finance & Trading Module — Architecture, Technical Specification & Expansion Guide
 
+> 📚 **System Documentation Index:**
+> - 🏛️ **System Architecture:** [../../../SYSTEM_ARCHITECTURE.md](../../../SYSTEM_ARCHITECTURE.md) — Multi-module system architecture specification.
+> - 📖 **Developer & Operator Manual:** [../../../OPERATOR_AND_DEVELOPER_GUIDE.md](../../../OPERATOR_AND_DEVELOPER_GUIDE.md) — Command reference & developer guide.
+> - 💹 **Finance Domain Root:** [../README_finance.md](../README_finance.md) — Central finance architecture.
+> - 📋 **Watchlist Submodule:** [../watchlist/README_finance_watchlist.md](../watchlist/README_finance_watchlist.md) — Asset registry & price alerts.
+> - 📊 **Technical Analysis Submodule:** [../technical/README_finance_technical.md](../technical/README_finance_technical.md) — Indicator suite & chart engine.
+> - 📈 **Fundamental Analysis Submodule:** [../fundamental/README_finance_fundamental.md](../fundamental/README_finance_fundamental.md) — Value screens & AI verdicts.
+> - 🌐 **Platform Root:** [../../../../README.md](../../../../README.md) & [../../../../ARCHITECTURE.md](../../../../ARCHITECTURE.md)
+
 ## 1. Executive Summary & Vision
 
 The `modules/finance` platform is a production-grade algorithmic trading, portfolio tracking, and automated market intelligence suite built directly into the Telegram bot system. 

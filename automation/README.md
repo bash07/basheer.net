@@ -18,6 +18,12 @@ It uses a unified Telegram Bot as the central control panel and **PydanticAI** a
 ### 🛠 Ops (`modules/ops/`)
 *   **Monitor (`ops/monitor`):** Real-time web service uptime monitor. Pings your configured sites every 5 minutes and flags `DOWN`, `RECOVERED`, or `SLOW` directly to Telegram.
 
+### 💹 Finance (`modules/finance/`)
+*   **Watchlist (`finance/watchlist`):** Multi-asset price tracking (US/IN stocks, crypto, forex, commodities) with threshold price alerts and daily morning briefs.
+*   **Technical Analysis (`finance/technical`):** Multi-timeframe charts, EMAs (21/50/100/200), RSI divergence detection with swing validation, potential curling setups, and 30-min market scanners.
+*   **Fundamental Analysis (`finance/fundamental`):** Benjamin Graham value investing screens, upcoming earnings alerts, and LLM-synthesized analyst verdicts.
+*   **Trader (`finance/trader`):** Institutional Smart Money Concepts (SMC) scanner, HTF bias engines, order blocks, FVG, volume profile, paper broker, and automated OMS.
+
 See [ROADMAP.md](ROADMAP.md) for all planned domains and submodules (`content/social`, `ops/analytics`, and more).
 
 ## ⚙️ Quickstart
@@ -39,6 +45,13 @@ See [ROADMAP.md](ROADMAP.md) for all planned domains and submodules (`content/so
     Message your Telegram bot the `/help` command to see the loaded modules and their commands.
 
 ## 📚 Documentation
-For detailed system flow, see [ARCHITECTURE.md](ARCHITECTURE.md).
-Planning to build a new integration? See [MODULE_DEVELOPMENT.md](MODULE_DEVELOPMENT.md).
-For upcoming features, see [ROADMAP.md](ROADMAP.md).
+- 🏛️ **System Architecture (All Modules):** [app/SYSTEM_ARCHITECTURE.md](app/SYSTEM_ARCHITECTURE.md) — Comprehensive architecture covering core engine, finance, blog, monitor, and ops.
+- 📖 **Developer & Operator Manual:** [app/OPERATOR_AND_DEVELOPER_GUIDE.md](app/OPERATOR_AND_DEVELOPER_GUIDE.md) — Complete slash command reference & development recipes.
+- 🎯 **Trading Engine & OMS Specification:** [app/modules/finance/trader/README_finance_trader.md](app/modules/finance/trader/README_finance_trader.md) — SMC scanner, dynamic indicator registry, and OMS roadmap.
+- 💹 **Finance Domain Overview:** [app/modules/finance/README_finance.md](app/modules/finance/README_finance.md) — Central manual for watchlist, classical TA, and fundamental analysis.
+- 📋 **Watchlist Submodule:** [app/modules/finance/watchlist/README_finance_watchlist.md](app/modules/finance/watchlist/README_finance_watchlist.md) — Ticker registry, batch pricing & price alerts.
+- 📊 **Technical Analysis Submodule:** [app/modules/finance/technical/README_finance_technical.md](app/modules/finance/technical/README_finance_technical.md) — Multi-extrema divergence, indicators & charts.
+- 📈 **Fundamental Analysis Submodule:** [app/modules/finance/fundamental/README_finance_fundamental.md](app/modules/finance/fundamental/README_finance_fundamental.md) — Graham value screens & AI verdicts.
+- 🏗️ **Platform Infrastructure:** [ARCHITECTURE.md](ARCHITECTURE.md) & [DEPLOYMENT.md](DEPLOYMENT.md) — Container topology, Caddy SSL gateway, and GCP setup.
+- 🔌 **Building New Modules:** [MODULE_DEVELOPMENT.md](MODULE_DEVELOPMENT.md) — Guide for creating new standalone automation modules.
+- 🗺️ **Platform Roadmap:** [ROADMAP.md](ROADMAP.md) — Upcoming features and milestones.

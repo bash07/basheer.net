@@ -24,7 +24,7 @@ Hugo is already installed and the project is initialized. Verify everything work
 
 ```powershell
 # Navigate to your project
-cd C:\Users\moham\Documents\basheer.net
+cd basheer.net
 
 # Test the build
 hugo --minify
@@ -52,7 +52,7 @@ You should see your blog with the PaperMod theme, the welcome post, and all navi
 ### 2.2 Push Your Code
 
 ```powershell
-cd C:\Users\moham\Documents\basheer.net
+cd basheer.net
 
 git add -A
 git commit -m "Initial commit: Hugo blog with SEO, AI generation, and N8N automation"
@@ -341,7 +341,7 @@ sudo docker compose up -d
 
 ### Updating Hugo Theme
 ```bash
-cd C:\Users\moham\Documents\basheer.net
+cd basheer.net
 git submodule update --remote themes/PaperMod
 ```
 

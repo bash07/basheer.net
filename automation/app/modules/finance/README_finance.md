@@ -1,8 +1,16 @@
 # Finance Module — Watchlist, Technical & Fundamental Analysis
 
-> **Scope:** `app/modules/finance/watchlist/`, `app/modules/finance/technical/`, `app/modules/finance/fundamental/`
-> **Data source:** [yfinance](https://github.com/ranaroussi/yfinance) (free tier)
+> **Scope:** `app/modules/finance/watchlist/`, `app/modules/finance/technical/`, `app/modules/finance/fundamental/`, `app/modules/finance/trader/`
+> **Data source:** [yfinance](https://github.com/ranaroussi/yfinance) (free tier) & Binance (crypto klines)
 > **Interface:** Telegram bot commands + APScheduler background jobs
+>
+> 📚 **Related Documentation:**
+> - 🏛️ **System Architecture:** [../../SYSTEM_ARCHITECTURE.md](../../SYSTEM_ARCHITECTURE.md) — Comprehensive multi-module architecture.
+> - 📋 **Watchlist Submodule Guide:** [watchlist/README_finance_watchlist.md](watchlist/README_finance_watchlist.md) — Asset registry, batch pricing & price alerts.
+> - 📊 **Technical Analysis Submodule Guide:** [technical/README_finance_technical.md](technical/README_finance_technical.md) — Indicators, divergence detection & charts.
+> - 📈 **Fundamental Analysis Submodule Guide:** [fundamental/README_finance_fundamental.md](fundamental/README_finance_fundamental.md) — Graham value screening & AI verdicts.
+> - 🎯 **Trading Engine & OMS Specification:** [trader/README_finance_trader.md](trader/README_finance_trader.md) — Institutional SMC scanner & OMS.
+> - 📖 **Operator & Developer Manual:** [../../OPERATOR_AND_DEVELOPER_GUIDE.md](../../OPERATOR_AND_DEVELOPER_GUIDE.md) — Complete command reference.
 
 ---
 
@@ -43,6 +51,7 @@ finance/
 ├── __init__.py              # registers all submodules with the platform
 ├── _shared/
 │   ├── cache.py             # TTLCache singletons (ticker, coingecko, feargreed, fundamentals)
+│   ├── extrema.py           # NumPy-native relative extrema detection (avoids heavy SciPy dependency)
 │   ├── market_hours.py      # is_market_open(category) → bool
 │   ├── notify.py            # notify(text) / notify_photo(path) — no Update needed
 │   └── chart_renderer.py    # subprocess-based matplotlib chart renderer
@@ -245,7 +254,7 @@ Delete a price alert by its numeric ID (shown in `/alerts`).
 
 #### `daily_summary_job` — 9:00 AM IST, Mon–Fri (CronTrigger)
 
-Sends a morning price briefing for **all watchlisted tickers** grouped by category. Same format as `/prices`. Uses `fetch_prices_batch()` which checks the cache first.
+Sends a morning price briefing for **all watchlisted tickers** grouped by category, followed by a **24-Hour Technical Alerts Digest** querying `SignalLog` for recently triggered RSI divergences, boundary crossovers, and volume spikes. Uses `fetch_prices_batch()` which checks the cache first.
 
 Trigger: `CronTrigger(hour=9, minute=0, day_of_week="mon-fri", timezone="Asia/Kolkata")`
 
@@ -301,7 +310,9 @@ All computation is in `indicators.py`. Inputs: a pandas OHLCV DataFrame (≥ 210
 
 | Indicator | Detail |
 |---|---|
-| **RSI(14)** | Wilder's exponential smoothing. Signals: `overbought` (> 70), `oversold` (< 30), `neutral` |
+| **RSI(14)** | Wilder's exponential smoothing. Emits boundary-crossing triggers on transitions across 30/70 and milestone levels (<20 / >80), preventing repetitive spam. |
+| **RSI Divergence** | Detects **Bullish** (price lower low, RSI higher low) and **Bearish** (price higher high, RSI lower high). Employs multi-extrema scanning for confirmed and active setups, with strict swing structure guards: rejects broken swings with intervening higher peaks / lower troughs, limits lookback separation to $\le 35$ bars, and enforces $|\Delta\text{RSI}| \ge 1.5$ to eliminate flat centerline noise. |
+| **Potential Setups** | Prospective early-warning alerts: **Developing Bull/Bear Divergence** (price testing swing support/resistance while RSI curls counter-trend) and **EMA Convergence Watch** (MAs narrowing to within 1.0% before a 21/50 or 50/200 cross). |
 | **EMA 21** | Short-term trend |
 | **EMA 50** | Medium-term trend |
 | **EMA 100** | Long-term trend |
@@ -310,27 +321,29 @@ All computation is in `indicators.py`. Inputs: a pandas OHLCV DataFrame (≥ 210
 | **Volume ratio** | Current volume ÷ 20-bar rolling average. Signals: `spike` (≥ 2×), `elevated` (≥ 1.5×), `normal`, `low` (< 0.5×) |
 | **EMA crossovers** | Detects 21/50, 50/200, 21/200 crossovers within the last 3 candles. Emits bullish/bearish label |
 
-> **Design note:** All pandas/numpy imports are inside `compute_ta()` to avoid loading 150 MB of libraries at startup on the 1 GB e2-micro instance.
+> **Design note:** All pandas/numpy imports are inside `compute_ta()` to avoid loading 150 MB of libraries at startup on the 1 GB e2-micro instance. Extrema detection uses 100% vectorized NumPy (`_shared/extrema.py`) with no dependency on SciPy.
 
 #### `TAResult` fields
 
 ```python
 @dataclass
 class TAResult:
-    symbol:        str
-    timeframe:     str           # "1d" | "1wk" | "1mo"
-    current_price: float
-    rsi:           float | None
-    rsi_signal:    str           # "overbought" | "oversold" | "neutral"
-    emas:          EMASet        # .ema21, .ema50, .ema100, .ema200
-    trend:         str           # "bullish" | "bearish" | "mixed"
-    volume_ratio:  float | None
-    volume_signal: str           # "spike" | "elevated" | "normal" | "low"
-    crossovers:    list[str]     # e.g. ["🟢 Bullish crossover: EMA21 above EMA50 (21/50)"]
-    signals:       list[str]     # union of RSI/volume/crossover alerts
-    ohlcv_json:    str           # JSON for chart renderer subprocess
-    ema_series:    dict          # {"ema21": [...], "ema50": [...], ...}
-    rsi_series:    list[float]
+    symbol:            str
+    timeframe:         str           # "1d" | "1wk" | "1mo"
+    current_price:     float
+    rsi:               float | None
+    rsi_signal:        str           # "overbought" | "oversold" | "neutral"
+    emas:              EMASet        # .ema21, .ema50, .ema100, .ema200
+    trend:             str           # "bullish" | "bearish" | "mixed"
+    volume_ratio:      float | None
+    volume_signal:     str           # "spike" | "elevated" | "normal" | "low"
+    rsi_divergence:    str           # "bullish" | "bearish" | "none"
+    crossovers:        list[str]     # e.g. ["🟢 Bullish crossover: EMA21 above EMA50 (21/50)"]
+    signals:           list[str]     # union of RSI/volume/crossover/divergence alerts
+    potential_signals: list[str]     # prospective curling divergence & EMA narrowing alerts
+    ohlcv_json:        str           # JSON for chart renderer subprocess
+    ema_series:        dict          # {"ema21": [...], "ema50": [...], ...}
+    rsi_series:        list[float]
 ```
 
 ### 3.2 Commands
