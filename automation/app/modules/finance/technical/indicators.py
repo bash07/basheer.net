@@ -256,30 +256,36 @@ def _rsi_divergence(close, rsi_series) -> str:
         for i in range(len(troughs) - 1, max(-1, len(troughs) - 4), -1):
             for j in range(i - 1, max(-1, i - 4), -1):
                 i2, i1 = int(troughs[i]), int(troughs[j])
-                if (len(price) - 1 - i2) <= 15 and (i2 - i1) >= 4:
-                    if price[i2] < price[i1] and rsi[i2] > rsi[i1]:
-                        logger.debug(
-                            "[ta] Confirmed Bullish RSI divergence: price %.2f→%.2f, RSI %.1f→%.1f",
-                            price[i1], price[i2], rsi[i1], rsi[i2],
-                        )
-                        return "bullish"
+                dist = i2 - i1
+                recency = len(price) - 1 - i2
+                if recency <= 15 and 4 <= dist <= 35:
+                    # Guard against intervening lower trough that breaks the swing structure
+                    if np.min(price[i1:i2 + 1]) >= price[i2] * 0.995:
+                        if price[i2] < price[i1] and (rsi[i2] - rsi[i1]) >= 1.5:
+                            if min(rsi[i1], rsi[i2]) <= 45.0:
+                                logger.debug(
+                                    "[ta] Confirmed Bullish RSI divergence: price %.2f→%.2f, RSI %.1f→%.1f",
+                                    price[i1], price[i2], rsi[i1], rsi[i2],
+                                )
+                                return "bullish"
 
     # (B) Check active/emerging bullish divergence on recent candles (last 5 bars)
-    # Catches current lower low with higher RSI before 3 subsequent recovery candles pass
     for cur_idx in range(len(price) - 1, max(len(price) - 6, ord_), -1):
         p_cur = price[cur_idx]
         r_cur = rsi[cur_idx]
         for t in reversed(troughs):
             t_idx = int(t)
             dist = cur_idx - t_idx
-            if 5 <= dist <= 60:
-                bounce_rsi = float(np.max(rsi[t_idx + 1:cur_idx])) if cur_idx > t_idx + 1 else r_cur
-                if p_cur < price[t_idx] and r_cur > rsi[t_idx] and bounce_rsi > rsi[t_idx] + 3.0:
-                    logger.debug(
-                        "[ta] Active Bullish RSI divergence: price trough %.2f (idx %d) → %.2f (idx %d), RSI %.1f → %.1f",
-                        price[t_idx], t_idx, p_cur, cur_idx, rsi[t_idx], r_cur,
-                    )
-                    return "bullish"
+            if 4 <= dist <= 35:
+                if np.min(price[t_idx:cur_idx + 1]) >= min(p_cur, price[t_idx]) * 0.995:
+                    if p_cur < price[t_idx] and (r_cur - rsi[t_idx]) >= 1.5 and min(r_cur, rsi[t_idx]) <= 45.0:
+                        bounce_rsi = float(np.max(rsi[t_idx + 1:cur_idx])) if cur_idx > t_idx + 1 else r_cur
+                        if bounce_rsi > rsi[t_idx] + 2.0:
+                            logger.debug(
+                                "[ta] Active Bullish RSI divergence: price trough %.2f (idx %d) → %.2f (idx %d), RSI %.1f → %.1f",
+                                price[t_idx], t_idx, p_cur, cur_idx, rsi[t_idx], r_cur,
+                            )
+                            return "bullish"
 
     # ── 2. Bearish Divergence ─────────────────────────────────────────────────
     peaks = argrelextrema(price, np.greater, order=ord_)[0]
@@ -289,13 +295,18 @@ def _rsi_divergence(close, rsi_series) -> str:
         for i in range(len(peaks) - 1, max(-1, len(peaks) - 4), -1):
             for j in range(i - 1, max(-1, i - 4), -1):
                 i2, i1 = int(peaks[i]), int(peaks[j])
-                if (len(price) - 1 - i2) <= 15 and (i2 - i1) >= 4:
-                    if price[i2] > price[i1] and rsi[i2] < rsi[i1]:
-                        logger.debug(
-                            "[ta] Confirmed Bearish RSI divergence: price %.2f→%.2f, RSI %.1f→%.1f",
-                            price[i1], price[i2], rsi[i1], rsi[i2],
-                        )
-                        return "bearish"
+                dist = i2 - i1
+                recency = len(price) - 1 - i2
+                if recency <= 15 and 4 <= dist <= 35:
+                    # Guard against intervening higher peak that breaks the swing structure
+                    if np.max(price[i1:i2 + 1]) <= price[i2] * 1.005:
+                        if price[i2] > price[i1] and (rsi[i1] - rsi[i2]) >= 1.5:
+                            if max(rsi[i1], rsi[i2]) >= 55.0:
+                                logger.debug(
+                                    "[ta] Confirmed Bearish RSI divergence: price %.2f→%.2f, RSI %.1f→%.1f",
+                                    price[i1], price[i2], rsi[i1], rsi[i2],
+                                )
+                                return "bearish"
 
     # (B) Check active/emerging bearish divergence on recent candles
     for cur_idx in range(len(price) - 1, max(len(price) - 6, ord_), -1):
@@ -304,14 +315,16 @@ def _rsi_divergence(close, rsi_series) -> str:
         for p in reversed(peaks):
             p_idx = int(p)
             dist = cur_idx - p_idx
-            if 5 <= dist <= 60:
-                pullback_rsi = float(np.min(rsi[p_idx + 1:cur_idx])) if cur_idx > p_idx + 1 else r_cur
-                if p_cur > price[p_idx] and r_cur < rsi[p_idx] and pullback_rsi < rsi[p_idx] - 3.0:
-                    logger.debug(
-                        "[ta] Active Bearish RSI divergence: price peak %.2f (idx %d) → %.2f (idx %d), RSI %.1f → %.1f",
-                        price[p_idx], p_idx, p_cur, cur_idx, rsi[p_idx], r_cur,
-                    )
-                    return "bearish"
+            if 4 <= dist <= 35:
+                if np.max(price[p_idx:cur_idx + 1]) <= max(p_cur, price[p_idx]) * 1.005:
+                    if p_cur > price[p_idx] and (rsi[p_idx] - r_cur) >= 1.5 and max(r_cur, rsi[p_idx]) >= 55.0:
+                        pullback_rsi = float(np.min(rsi[p_idx + 1:cur_idx])) if cur_idx > p_idx + 1 else r_cur
+                        if pullback_rsi < rsi[p_idx] - 2.0:
+                            logger.debug(
+                                "[ta] Active Bearish RSI divergence: price peak %.2f (idx %d) → %.2f (idx %d), RSI %.1f → %.1f",
+                                price[p_idx], p_idx, p_cur, cur_idx, rsi[p_idx], r_cur,
+                            )
+                            return "bearish"
 
     return "none"
 
@@ -361,13 +374,13 @@ def _potential_divergence(close, rsi_series, current_price: float) -> str | None
     for t in reversed(troughs):
         t_idx = int(t)
         dist = len(price) - 1 - t_idx
-        if 5 <= dist <= 60:
+        if 4 <= dist <= 35:
             prior_price = float(price[t_idx])
             prior_rsi   = float(rsi[t_idx])
-            if prior_rsi <= 40.0:
+            if prior_rsi <= 45.0 and np.min(price[t_idx:]) >= min(current_price, prior_price) * 0.99:
                 price_ratio = (current_price - prior_price) / prior_price
                 # Price is testing support or making lower low (within 2.5% above or lower)
-                if price_ratio <= 0.025 and curr_rsi > prior_rsi and rsi_curling_up:
+                if price_ratio <= 0.025 and (curr_rsi - prior_rsi) >= 1.0 and rsi_curling_up:
                     return (
                         f"⚠️ Developing Bull Divergence: Price testing {current_price:,.2f} "
                         f"with RSI curling up ({curr_rsi:.1f} vs prior {prior_rsi:.1f})"
@@ -378,13 +391,13 @@ def _potential_divergence(close, rsi_series, current_price: float) -> str | None
     for p in reversed(peaks):
         p_idx = int(p)
         dist = len(price) - 1 - p_idx
-        if 5 <= dist <= 60:
+        if 4 <= dist <= 35:
             prior_price = float(price[p_idx])
             prior_rsi   = float(rsi[p_idx])
-            if prior_rsi >= 60.0:
+            if prior_rsi >= 55.0 and np.max(price[p_idx:]) <= max(current_price, prior_price) * 1.01:
                 price_ratio = (current_price - prior_price) / prior_price
                 # Price is testing resistance or making higher high (within 2.5% below or higher)
-                if price_ratio >= -0.025 and curr_rsi < prior_rsi and rsi_curling_down:
+                if price_ratio >= -0.025 and (prior_rsi - curr_rsi) >= 1.0 and rsi_curling_down:
                     return (
                         f"⚠️ Developing Bear Divergence: Price testing {current_price:,.2f} "
                         f"with RSI curling down ({curr_rsi:.1f} vs prior {prior_rsi:.1f})"

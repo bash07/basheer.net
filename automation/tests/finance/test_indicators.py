@@ -241,6 +241,40 @@ class TestRSIDivergence:
         rsi = pd.Series([50.0, 52.0, 55.0])
         assert _rsi_divergence(price, rsi) == "none"
 
+    def test_no_bear_divergence_when_intervening_peak_higher(self):
+        import numpy as np
+        import pandas as pd
+        # Peak 1 at idx 10 (price 100, RSI 65)
+        # Giant intervening peak at idx 18 (price 120, RSI 75)
+        # Peak 2 at idx 25 (price 105, RSI 60)
+        # Peak 2 (105) is higher than Peak 1 (100) and RSI is lower (60 vs 65),
+        # but the intervening peak 120 invalidates it.
+        price = np.array([90.0] * 35, dtype=float)
+        price[10] = 100.0
+        price[18] = 120.0
+        price[25] = 105.0
+
+        rsi = np.array([50.0] * 35, dtype=float)
+        rsi[10] = 65.0
+        rsi[18] = 75.0
+        rsi[25] = 60.0
+
+        assert _rsi_divergence(pd.Series(price), pd.Series(rsi)) == "none"
+
+    def test_no_bear_divergence_when_rsi_delta_negligible(self):
+        import numpy as np
+        import pandas as pd
+        # Peak 1 (price 100, RSI 50.5), Peak 2 (price 105, RSI 50.3) -> delta 0.2
+        price = np.array([90.0] * 35, dtype=float)
+        price[10] = 100.0
+        price[20] = 105.0
+
+        rsi = np.array([45.0] * 35, dtype=float)
+        rsi[10] = 50.5
+        rsi[20] = 50.3
+
+        assert _rsi_divergence(pd.Series(price), pd.Series(rsi)) == "none"
+
 
 class TestPotentialSetups:
     def test_potential_bull_divergence_curling_up(self):

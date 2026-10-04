@@ -6,10 +6,10 @@ from functools import lru_cache
 import os
 import subprocess
 
-__version__ = "1.2.0"
-BUILD_DATE = "2026-10-03"
-DEFAULT_COMMIT = "47d2ab9"
-DEFAULT_SUMMARY = "feat(finance): TA divergence detection, potential setups & daily digest"
+__version__ = "1.2.1"
+BUILD_DATE = "2026-10-04"
+DEFAULT_COMMIT = "e87d12a"
+DEFAULT_SUMMARY = "fix(finance): prevent false-positive divergence across broken swings"
 
 
 @lru_cache(maxsize=1)

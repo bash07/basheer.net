@@ -44,8 +44,10 @@ async def _llm_verdict(data: FundamentalsData, result: StrategyResult) -> str:
         "Be direct and factual. Plain text only — no markdown, no bullet points."
     )
 
+    from core.llm import get_model
+
     agent = Agent(
-        model=config.llm_model,
+        model=get_model("nano") if config.llm_nano_model else get_model("primary"),
         system_prompt=(
             "You are a quantitative fundamental analyst. "
             "Your verdicts are concise, factual, and data-driven. "

@@ -60,12 +60,18 @@ def _build_model(tier: str = "primary") -> Model:
         model_name = config.llm_model
 
     if provider == "gemini":
+        import os
+        if config.gemini_api_key and "GEMINI_API_KEY" not in os.environ:
+            os.environ["GEMINI_API_KEY"] = config.gemini_api_key
         from pydantic_ai.models.gemini import GeminiModel
-        return GeminiModel(model_name)              # reads GEMINI_API_KEY automatically
+        return GeminiModel(model_name)
 
     if provider == "openrouter":
+        import os
+        if config.openrouter_api_key and "OPENROUTER_API_KEY" not in os.environ:
+            os.environ["OPENROUTER_API_KEY"] = config.openrouter_api_key
         from pydantic_ai.models.openrouter import OpenRouterModel
-        return OpenRouterModel(model_name)          # reads OPENROUTER_API_KEY automatically
+        return OpenRouterModel(model_name)
 
     if provider == "openai-compat":
         from pydantic_ai.models.openai import OpenAIChatModel
