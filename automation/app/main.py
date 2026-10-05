@@ -25,6 +25,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Ensure bot.log is written to data_dir for remote tailing (/logs)
+try:
+    from modules.ops.health.logs import ensure_file_logging
+    ensure_file_logging()
+except Exception as _e:
+    pass
+
 # Module models are auto-imported by core.registry during load_modules().
 # No explicit model imports are needed here.
 

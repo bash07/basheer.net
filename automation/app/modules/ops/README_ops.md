@@ -10,7 +10,7 @@ The `ops` domain manages the administrative lifecycle, operational tooling, and 
 flowchart TD
     subgraph OpsDomain ["ops/ Domain Container"]
         SYS["ops/system/ (Active)\n• Dynamic Plugin Manager\n• Pip GitHub Installer\n• Graceful Restarts"]
-        HEALTH["ops/health/ (Planned)\n• Host & Container Resource Probes\n• OOM Warning Engine\n• SQLite DB Size Inspection\n• Log Viewer"]
+        HEALTH["ops/health/ (Active)\n• Host & Container Resource Probes\n• OOM Warning Engine\n• SQLite DB Size Inspection\n• Log Viewer"]
         ANALYTICS["ops/analytics/ (Planned)\n• Cloudflare / Traffic Analytics\n• Traffic Spikes & Drop Alerts"]
         MAINT["ops/maintenance/ (Planned)\n• Broken Link Spider\n• Outbound 404 Checks"]
     end
@@ -37,9 +37,21 @@ flowchart TD
   - `/system list` — Lists currently active installed dynamic modules.
   - `/system restart` — Restarts the container process (Docker daemon revives within ~3s).
 
+### `ops/health/` — System Resource & Host Health
+- **Files**:
+  - [`health/__init__.py`](health/__init__.py) — Module registration & Telegram router
+  - [`health/probes.py`](health/probes.py) — Pure reading from `/proc`, cgroups, Windows API (memory, CPU, disk, DBs)
+  - [`health/jobs.py`](health/jobs.py) — 15-minute APScheduler watchdog with Telegram alerts
+  - [`health/formatters.py`](health/formatters.py) — Markdown system card and alert formatting
+  - [`health/logs.py`](health/logs.py) — Tail reader and error parser for `bot.log`
+- **Commands**:
+  - `/sys` (or `/health`) — Comprehensive resource & system health snapshot
+  - `/logs [n]` — View last $n$ lines of bot logs (default 25, max 100)
+  - `/logs errors` — View recent warning/error entries
+
 ---
 
-## 3. Planned Implementation: `ops/health/` — System Resource & Host Health
+## 3. Implementation: `ops/health/` — System Resource & Host Health
 
 ### 3.1 Background & Motivation
 The automation bot operates on a **1 GB GCP `e2-micro` instance** running Debian with Docker.

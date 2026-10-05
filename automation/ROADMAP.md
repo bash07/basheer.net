@@ -13,6 +13,8 @@ app/modules/
 │   └── refresh/       🗺 Planned
 ├── ops/               🛠 Site health, monitoring & analytics
 │   ├── monitor/       ✅ Active
+│   ├── system/        ✅ Active
+│   ├── health/        ✅ Active
 │   ├── analytics/     🗺 Planned
 │   └── maintenance/   🗺 Planned
 ├── finance/           💹 Market tracking, analysis & portfolio
@@ -133,6 +135,25 @@ Sends immediate Telegram alerts on any status change. Persists metrics in SQLite
 
 **Telegram Commands:**
 - `/check_links` — Force a manual spider crawl right now
+
+---
+
+### ✅ `ops/health/` — System Resource & Host Health (Active)
+
+**Documentation:** [app/modules/ops/README_ops.md](app/modules/ops/README_ops.md)
+
+**Goal:** Prevent Linux OOM kills and disk exhaustion on the 1 GB GCP `e2-micro` instance through proactive monitoring and diagnostics.
+
+**Features:**
+- **Host & Container Metrics:** Tracks CPU load average, RAM consumption (process RSS vs. host available), and disk usage on persistent volume `/app/data/`.
+- **Database & Cache Health:** Measures file sizes for `automation.db`, WAL logs, and `cache.db` to prevent disk bloat.
+- **Proactive Watchdog:** APScheduler job runs every 15 minutes, alerting Telegram if available RAM drops below 150 MB or disk usage exceeds 85%.
+- **Log Inspection:** Remote log tailing and error log viewer via Telegram.
+
+**Telegram Commands:**
+- `/sys` (or `/health`) — Comprehensive resource & system health snapshot
+- `/logs [n]` — View last $n$ lines of bot logs
+- `/logs errors` — View recent warning/error entries
 
 ---
 
