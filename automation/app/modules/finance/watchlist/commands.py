@@ -255,18 +255,59 @@ async def watchlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/alert <ticker> > <price>  or  /alert <ticker> < <price>"""
+    """/alert <ticker> > <price>  or  /alert <ticker> < <price>  or  /alert <ticker> trail <-5%|+10%>"""
     args = context.args or []
     if len(args) < 3:
         await update.message.reply_text(
-            "Usage: `/alert <ticker> > <price>`\n"
-            "Example: `/alert AAPL > 200` or `/alert BTC-USD < 50000`",
+            "Usage:\n"
+            "• Static: `/alert <ticker> > <price>` (e.g. `/alert AAPL > 200`)\n"
+            "• Trailing: `/alert <ticker> trail -5%` (e.g. alert on 5% pullback from high)",
             parse_mode="Markdown",
         )
         return
 
     symbol    = args[0].upper()
-    condition = args[1]
+    condition = args[1].lower()
+
+    # Trailing alert mode
+    if condition in ("trail", "trailing"):
+        val_str = args[2].replace("%", "").strip()
+        try:
+            trail_pct = float(val_str)
+        except ValueError:
+            await update.message.reply_text("❌ Trailing percentage must be a number (e.g. `-5%` or `10%`).", parse_mode="Markdown")
+            return
+
+        with get_db() as db:
+            entry = db.execute(
+                select(WatchlistEntry).where(WatchlistEntry.symbol == symbol)
+            ).scalar_one_or_none()
+
+            if not entry:
+                await update.message.reply_text(
+                    f"⚠️ `{symbol}` is not in your watchlist.\n"
+                    "Add it first with `/watch <ticker>`.",
+                    parse_mode="Markdown",
+                )
+                return
+
+            db.add(PriceAlert(
+                symbol=symbol,
+                condition="<" if trail_pct < 0 else ">",
+                threshold=0.0,
+                alert_type="trailing_pct",
+                trail_pct=trail_pct,
+                trail_reference_price=None,
+            ))
+
+        dir_desc = f"pulls back {abs(trail_pct):.1f}% from its peak" if trail_pct < 0 else f"rallies +{trail_pct:.1f}% from its trough"
+        await update.message.reply_text(
+            f"🔔 Trailing alert set: notify when *{symbol}* {dir_desc}.",
+            parse_mode="Markdown",
+        )
+        return
+
+    # Static alert mode
     try:
         threshold = float(args[2].replace(",", ""))
     except ValueError:
@@ -275,7 +316,7 @@ async def alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if condition not in (">", "<"):
         await update.message.reply_text(
-            "❌ Condition must be `>` or `<`.", parse_mode="Markdown"
+            "❌ Condition must be `>` or `<`, or `trail`.", parse_mode="Markdown"
         )
         return
 
@@ -293,7 +334,7 @@ async def alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             )
             return
 
-        db.add(PriceAlert(symbol=symbol, condition=condition, threshold=threshold))
+        db.add(PriceAlert(symbol=symbol, condition=condition, threshold=threshold, alert_type="static"))
 
     direction = "rises above" if condition == ">" else "drops below"
     await update.message.reply_text(
@@ -320,8 +361,13 @@ async def alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     lines = ["🔔 *Active Price Alerts*\n"]
     for a in rows:
-        direction = "↑ above" if a.condition == ">" else "↓ below"
-        lines.append(f"`#{a.id}` *{a.symbol}* {direction} `{a.threshold:,.2f}`")
+        if getattr(a, "alert_type", "static") == "trailing_pct" and a.trail_pct is not None:
+            pct_desc = f"{a.trail_pct:+.1f}% trail"
+            ref_str = f" (ref: `{a.trail_reference_price:,.2f}`)" if a.trail_reference_price else ""
+            lines.append(f"`#{a.id}` *{a.symbol}* {pct_desc}{ref_str}")
+        else:
+            direction = "↑ above" if a.condition == ">" else "↓ below"
+            lines.append(f"`#{a.id}` *{a.symbol}* {direction} `{a.threshold:,.2f}`")
 
     lines.append("\nDelete with `/delalert <id>`")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")

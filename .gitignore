@@ -23,3 +23,4 @@ venv/
 node_modules/
 
 .backtest_cache/
+automation/BASHEER_ENV.md

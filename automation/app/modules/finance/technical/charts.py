@@ -70,10 +70,11 @@ async def fetch_and_render(symbol: str, timeframe: str = DEFAULT_TF) -> tuple[st
     result = compute_ta(df, symbol=symbol, timeframe=tf)
 
     png_path = await render_chart({
-        "ohlcv_json": result.ohlcv_json,
-        "emas":       result.ema_series,
-        "rsi":        result.rsi_series,
-        "title":      f"{symbol} — {tf.upper()}",
+        "ohlcv_json":       result.ohlcv_json,
+        "emas":             result.ema_series,
+        "rsi":              result.rsi_series,
+        "volume_profile":   result.volume_profile,
+        "title":            f"{symbol} — {tf.upper()}",
     })
     return png_path, result
 

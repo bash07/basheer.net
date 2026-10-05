@@ -154,6 +154,7 @@ def clean_db(tmp_path, monkeypatch):
     # Ensure all module models are imported so their tables are registered with Base
     import modules.finance.watchlist.models   # noqa: F401
     import modules.finance.technical.models   # noqa: F401
+    import modules.finance.trader.models      # noqa: F401
     import modules.blog.models                # noqa: F401
     import modules.monitor.models             # noqa: F401
 

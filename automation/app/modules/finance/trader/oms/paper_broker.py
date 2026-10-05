@@ -40,39 +40,80 @@ class PaperBroker(Broker):
         self._state_file = _get_account_file_path()
         self._ensure_state()
 
-    # ── State Persistence ─────────────────────────────────────────────────────
+    # ── State Persistence (DB-backed with JSON fallback) ─────────────────────
 
-    def _ensure_state(self) -> dict:
-        """Ensure the account state exists, creating defaults if not."""
-        if not os.path.exists(self._state_file):
-            state = {
-                "initial_balance": self._initial_balance,
-                "cash": self._initial_balance,
-                "total_realised_pnl": 0.0,
-                "currency": "USD",
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-            self._save_state(state)
-            return state
-        return self._load_state()
+    def _ensure_state(self, db=None) -> dict:
+        """Ensure account record exists in DB (or state file), returning dict."""
+        from ..models import AccountBalance
+        from sqlalchemy import select
 
-    def _load_state(self) -> dict:
-        """Load account state from disk."""
-        try:
-            with open(self._state_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.warning("[oms.paper] Failed to load state: %s. Re-initialising.", e)
+        if db is not None:
+            bal_row = db.execute(
+                select(AccountBalance).where(AccountBalance.broker == self.name)
+            ).scalar_one_or_none()
+            if bal_row is None:
+                bal_row = AccountBalance(
+                    broker=self.name,
+                    currency="USD",
+                    initial_balance=self._initial_balance,
+                    cash=self._initial_balance,
+                    total_realised_pnl=0.0,
+                    updated_at=datetime.now(timezone.utc),
+                )
+                db.add(bal_row)
+                db.flush()
             return {
-                "initial_balance": self._initial_balance,
-                "cash": self._initial_balance,
-                "total_realised_pnl": 0.0,
-                "currency": "USD",
-                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "initial_balance": bal_row.initial_balance,
+                "cash": bal_row.cash,
+                "total_realised_pnl": bal_row.total_realised_pnl,
+                "currency": bal_row.currency,
+                "updated_at": bal_row.updated_at.isoformat() if bal_row.updated_at else datetime.now(timezone.utc).isoformat(),
             }
+
+        try:
+            from core.db import get_db
+            with get_db() as local_db:
+                bal_row = local_db.execute(
+                    select(AccountBalance).where(AccountBalance.broker == self.name)
+                ).scalar_one_or_none()
+                if bal_row is None:
+                    bal_row = AccountBalance(
+                        broker=self.name,
+                        currency="USD",
+                        initial_balance=self._initial_balance,
+                        cash=self._initial_balance,
+                        total_realised_pnl=0.0,
+                        updated_at=datetime.now(timezone.utc),
+                    )
+                    local_db.add(bal_row)
+                    local_db.commit()
+                return {
+                    "initial_balance": bal_row.initial_balance,
+                    "cash": bal_row.cash,
+                    "total_realised_pnl": bal_row.total_realised_pnl,
+                    "currency": bal_row.currency,
+                    "updated_at": bal_row.updated_at.isoformat() if bal_row.updated_at else datetime.now(timezone.utc).isoformat(),
+                }
+        except Exception as e:
+            logger.debug("[oms.paper] Falling back to file state: %s", e)
+            if not os.path.exists(self._state_file):
+                state = {
+                    "initial_balance": self._initial_balance,
+                    "cash": self._initial_balance,
+                    "total_realised_pnl": 0.0,
+                    "currency": "USD",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                self._save_state(state)
+                return state
+            return self._load_state()
+
+    def _load_state(self, db=None) -> dict:
+        """Load account state from DB (or file fallback)."""
+        return self._ensure_state(db=db)
 
     def _save_state(self, state: dict) -> None:
-        """Save account state to disk."""
+        """Save account state to disk fallback."""
         try:
             os.makedirs(os.path.dirname(self._state_file), exist_ok=True)
             with open(self._state_file, "w", encoding="utf-8") as f:
@@ -80,8 +121,44 @@ class PaperBroker(Broker):
         except Exception as e:
             logger.error("[oms.paper] Failed to save account state: %s", e)
 
-    def record_trade_pnl(self, pnl: float) -> None:
+    def record_trade_pnl(self, pnl: float, db=None) -> None:
         """Update cash and realised P&L when a trade is closed."""
+        from ..models import AccountBalance
+        from sqlalchemy import select
+
+        if db is not None:
+            bal_row = db.execute(
+                select(AccountBalance).where(AccountBalance.broker == self.name)
+            ).scalar_one_or_none()
+            if bal_row:
+                bal_row.cash = round(bal_row.cash + pnl, 4)
+                bal_row.total_realised_pnl = round(bal_row.total_realised_pnl + pnl, 4)
+                bal_row.updated_at = datetime.now(timezone.utc)
+                logger.info(
+                    "[oms.paper] Trade PnL recorded in DB: %+.2f USD. New cash: %.2f USD",
+                    pnl, bal_row.cash,
+                )
+                return
+
+        try:
+            from core.db import get_db
+            with get_db() as local_db:
+                bal_row = local_db.execute(
+                    select(AccountBalance).where(AccountBalance.broker == self.name)
+                ).scalar_one_or_none()
+                if bal_row:
+                    bal_row.cash = round(bal_row.cash + pnl, 4)
+                    bal_row.total_realised_pnl = round(bal_row.total_realised_pnl + pnl, 4)
+                    bal_row.updated_at = datetime.now(timezone.utc)
+                    local_db.commit()
+                    logger.info(
+                        "[oms.paper] Trade PnL recorded in DB: %+.2f USD. New cash: %.2f USD",
+                        pnl, bal_row.cash,
+                    )
+                    return
+        except Exception as e:
+            logger.debug("[oms.paper] DB record_trade_pnl failed, falling back to file: %s", e)
+
         state = self._load_state()
         state["cash"] = round(float(state.get("cash", self._initial_balance)) + pnl, 4)
         state["total_realised_pnl"] = round(
@@ -94,9 +171,39 @@ class PaperBroker(Broker):
             pnl, state["cash"],
         )
 
-    def reset_account(self, starting_balance: Optional[float] = None) -> None:
+    def reset_account(self, starting_balance: Optional[float] = None, db=None) -> None:
         """Reset paper account balance back to clean starting state."""
         bal = starting_balance or self._initial_balance
+        from ..models import AccountBalance
+        from sqlalchemy import select
+
+        if db is not None:
+            bal_row = db.execute(
+                select(AccountBalance).where(AccountBalance.broker == self.name)
+            ).scalar_one_or_none()
+            if bal_row:
+                bal_row.initial_balance = bal
+                bal_row.cash = bal
+                bal_row.total_realised_pnl = 0.0
+                bal_row.updated_at = datetime.now(timezone.utc)
+                return
+
+        try:
+            from core.db import get_db
+            with get_db() as local_db:
+                bal_row = local_db.execute(
+                    select(AccountBalance).where(AccountBalance.broker == self.name)
+                ).scalar_one_or_none()
+                if bal_row:
+                    bal_row.initial_balance = bal
+                    bal_row.cash = bal
+                    bal_row.total_realised_pnl = 0.0
+                    bal_row.updated_at = datetime.now(timezone.utc)
+                    local_db.commit()
+                    return
+        except Exception as e:
+            logger.debug("[oms.paper] DB reset_account failed, falling back to file: %s", e)
+
         state = {
             "initial_balance": bal,
             "cash": bal,
@@ -183,9 +290,13 @@ class PaperBroker(Broker):
             notes="Paper position close executed",
         )
 
-    def get_account_info(self, open_positions: Optional[list] = None) -> AccountInfo:
+    def get_account_info(
+        self,
+        open_positions: Optional[list] = None,
+        db=None,
+    ) -> AccountInfo:
         """Return current account balance, equity, and unrealised P&L."""
-        state = self._load_state()
+        state = self._load_state(db=db)
         cash = float(state.get("cash", self._initial_balance))
 
         unrealised_pnl = 0.0

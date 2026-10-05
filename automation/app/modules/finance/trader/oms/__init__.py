@@ -72,6 +72,16 @@ def get_account_summary(db):
     return get_engine().get_account_summary(db)
 
 
+def resume_trading():
+    """Reset the circuit breaker halt state."""
+    get_engine().risk_manager.resume_trading()
+
+
+def check_circuit_breaker(db, equity: float):
+    """Check circuit breaker state."""
+    return get_engine().risk_manager.check_circuit_breaker(db, equity)
+
+
 __all__ = [
     "AccountInfo",
     "Broker",
@@ -80,12 +90,14 @@ __all__ = [
     "ExecutionEngine",
     "PaperBroker",
     "RiskManager",
+    "check_circuit_breaker",
     "close_position_manual",
     "get_account_summary",
     "get_broker",
     "get_engine",
     "get_open_positions",
     "open_position_from_signal",
+    "resume_trading",
     "set_broker",
     "update_open_positions_for_ticker",
 ]

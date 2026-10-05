@@ -28,8 +28,9 @@ def format_full_report(data: FundamentalsData, result: StrategyResult) -> str:
         rows.append(f"{icon} {c.name}: `{c.actual}` (threshold: {c.threshold})")
 
     verdict_block = f"\n📝 *Verdict:*\n{result.verdict}" if result.verdict else ""
+    margin_block = f"\n⚠️ *Margin Alert:*\n{data.margin_trend_warning}" if data.margin_trend_warning else ""
 
-    return header + score_line + "\n".join(rows) + verdict_block
+    return header + score_line + "\n".join(rows) + margin_block + verdict_block
 
 
 def format_screen_row(symbol: str, result: StrategyResult | None, rank: int) -> str:

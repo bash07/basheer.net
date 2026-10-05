@@ -1,18 +1,8 @@
 """RSI indicators — registered into the global indicator registry."""
 from __future__ import annotations
 
+from modules.finance._shared.indicators import calc_rsi
 from . import register
-
-
-def calc_rsi(close, period: int = 14):
-    """Calculate Wilder RSI series for any period."""
-    delta = close.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = (-delta).where(delta < 0, 0.0)
-    avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
-    avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
-    rs = avg_gain / avg_loss.replace(0, float("inf"))
-    return 100 - (100 / (1 + rs))
 
 
 @register("rsi_14")

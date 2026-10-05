@@ -102,17 +102,52 @@ async def check_price_alerts_job() -> None:
             logger.warning("[watchlist] No price for %s — skipping alert #%d", alert.symbol, alert.id)
             continue
 
-        hit = (alert.condition == ">" and price > alert.threshold) or \
-              (alert.condition == "<" and price < alert.threshold)
+        if getattr(alert, "alert_type", "static") == "trailing_pct" and alert.trail_pct is not None:
+            # Trailing percentage alert logic
+            ref_px = alert.trail_reference_price or price
+            trail_pct = float(alert.trail_pct)
 
-        if hit:
-            direction = "📈 rose above" if alert.condition == ">" else "📉 dropped below"
-            messages.append(
-                f"🔔 *Price Alert Triggered!*\n"
-                f"`{alert.symbol}` {direction} `{alert.threshold:,.2f}`\n"
-                f"Current price: `{price:,.2f}`"
-            )
-            triggered_ids.append(alert.id)
+            if trail_pct < 0:
+                # Downside trailing: tracks peak; triggers when price drops X% below peak
+                if price > ref_px:
+                    alert.trail_reference_price = price
+                    ref_px = price
+                drawdown_pct = ((price - ref_px) / ref_px) * 100.0
+                hit = drawdown_pct <= trail_pct
+                if hit:
+                    messages.append(
+                        f"🔔 *Trailing Price Alert Triggered!*\n"
+                        f"`{alert.symbol}` dropped `{abs(drawdown_pct):.1f}%` from peak `{ref_px:,.2f}` (Limit: `{abs(trail_pct):.1f}%`)\n"
+                        f"Current price: `{price:,.2f}`"
+                    )
+                    triggered_ids.append(alert.id)
+            else:
+                # Upside trailing: tracks trough; triggers when price rises X% above trough
+                if price < ref_px:
+                    alert.trail_reference_price = price
+                    ref_px = price
+                rally_pct = ((price - ref_px) / ref_px) * 100.0
+                hit = rally_pct >= trail_pct
+                if hit:
+                    messages.append(
+                        f"🔔 *Trailing Price Alert Triggered!*\n"
+                        f"`{alert.symbol}` rallied `+{rally_pct:.1f}%` from trough `{ref_px:,.2f}` (Limit: `+{trail_pct:.1f}%`)\n"
+                        f"Current price: `{price:,.2f}`"
+                    )
+                    triggered_ids.append(alert.id)
+        else:
+            # Standard static threshold alert
+            hit = (alert.condition == ">" and price > alert.threshold) or \
+                  (alert.condition == "<" and price < alert.threshold)
+
+            if hit:
+                direction = "📈 rose above" if alert.condition == ">" else "📉 dropped below"
+                messages.append(
+                    f"🔔 *Price Alert Triggered!*\n"
+                    f"`{alert.symbol}` {direction} `{alert.threshold:,.2f}`\n"
+                    f"Current price: `{price:,.2f}`"
+                )
+                triggered_ids.append(alert.id)
 
     # Mark triggered alerts in DB
     if triggered_ids:

@@ -64,8 +64,11 @@ automation/app/modules/finance/watchlist/
 | :--- | :--- | :--- | :--- |
 | `id` | `INTEGER` | Primary Key, Auto-increment | Internal unique alert ID. |
 | `symbol` | `VARCHAR(30)` | Indexed, Non-null | Ticker symbol target. |
-| `condition` | `VARCHAR(2)` | Non-null | Comparison operator: `>` or `<`. |
-| `threshold` | `FLOAT` | Non-null | Target price trigger. |
+| `alert_type` | `VARCHAR(20)` | Non-null, Default `'static'` | Alert mode: `'static'` threshold or `'trailing'` percentage. |
+| `condition` | `VARCHAR(2)` | Nullable | Comparison operator for static alerts: `>` or `<`. |
+| `threshold` | `FLOAT` | Nullable | Target price trigger for static alerts. |
+| `trail_pct` | `FLOAT` | Nullable | Trailing percentage pullback (e.g. `-5.0` for -5%). |
+| `peak_price` | `FLOAT` | Nullable | High-water mark recorded for trailing alerts. |
 | `triggered` | `BOOLEAN` | Default `False` | Alert trigger flag (set to `True` once fired). |
 | `created_at` | `DATETIME` | Non-null, Default UTC | Timestamp when alert was configured. |
 
@@ -133,14 +136,13 @@ Batch quote snapshot across all tickers in the watchlist or a specified category
 - **Example**: `/prices indian_stock`
 
 ### 5.6 `/alert`
-Create a threshold price alert.
-- **Syntax**: `/alert <ticker> <condition> <price>`
-- **Condition**: `>` (greater than) or `<` (less than).
-- **Example**:
-  ```
-  /alert BTC-USD > 95000
-  /alert INFY.NS < 1700
-  ```
+Create a price alert (supports both static thresholds and trailing percentage pullbacks).
+- **Static Syntax**: `/alert <ticker> <condition> <price>`
+  - **Condition**: `>` (greater than) or `<` (less than).
+  - **Example**: `/alert BTC-USD > 95000` or `/alert INFY.NS < 1700`
+- **Trailing Syntax**: `/alert <ticker> trail <pct>%`
+  - Tracks the high-water mark peak price and fires when price pulls back by the specified percentage.
+  - **Example**: `/alert AAPL trail -5%` or `/alert BTC-USD trail -8%`
 
 ### 5.7 `/alerts`
 List all active (untriggered) price alerts with their target thresholds.

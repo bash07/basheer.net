@@ -123,14 +123,16 @@ class MyNewStrategy(BaseStrategy):
 
 ### 3.4. Order Management System (`modules/finance/trader/oms/`)
 - **Broker Interface (`oms/broker.py`)**: Clean ABC defining `submit_order()`, `close_position()`, `get_account_info()`, and `get_current_price()`.
-- **Paper Broker (`oms/paper_broker.py`)**: Maintains settled cash balance, tracks unrealized/realized P&L, and persists state across Docker container restarts in `paper_account.json` in `/app/data/`.
+- **Paper Broker (`oms/paper_broker.py`)**: Maintains settled cash balance, tracks unrealized/realized P&L, and persists state transactionally in SQLite table `account_balances` within `automation.db` (with automatic migration from legacy `paper_account.json`).
 - **Risk Management (`oms/risk.py`)**:
   - Fractional equity sizing ($1.0\%$ default risk per trade).
   - Enforces portfolio exposure caps: max 5 open positions, max 25% account capital in a single trade, max 5% aggregate open risk.
+  - **Portfolio Circuit Breaker (Kill Switch)**: Automatically halts execution if 24-hour realized losses exceed 3% of equity or if 3 consecutive trades hit stop-loss. Manual reset via `/resume`.
   - Zero-override safety: prevents forced trade sizing that would blow through account risk caps.
 - **Execution Engine (`oms/engine.py`)**:
   - Connects human Telegram decisions to position execution.
   - Evaluates candle Highs/Lows against TP1/SL every 30 minutes in the background loop.
+  - **Partial Take-Profit (TP1) & Breakeven SL**: Scales out 50% of position size upon hitting TP1 and shifts `stop_loss` to `entry_price` to lock in a risk-free trade.
   - Conservative ambiguous candle policy: defaults to SL-first if a candle touches both TP and SL.
 
 ---
@@ -195,6 +197,7 @@ trades
 | `/performance`| None | Analytics comparison: executed OMS trades vs. theoretical signal scanner stats. |
 | `/traderbias` | `<ticker>` | Deep-dive HTF bias breakdown (Regime, Hidden Divergence, Cardwell zones). |
 | `/confluence` | `<ticker>` | Volume Profile (POC, VAH, VAL, HVN, LVN) + classical S/R levels. |
+| `/resume` | None | Reset Portfolio Circuit Breaker after automated halt. |
 
 ---
 
@@ -217,15 +220,16 @@ trades
 
 ### Plan 2: Advanced Position Scaling, TP2 & Trailing Stop Management
 - **Goal**: Professional trade management with multi-stage take-profit scaling and risk mitigation.
+- **Status**: Partial exits (50% scale-out at TP1) and automated Breakeven Stop Loss adjustment are **Completed ✅**.
 - **Technical Steps**:
-  1. **Partial Exits**:
-     - When TP1 is hit: close $50\%$ of the position quantity, bank partial profit, and record a partial `Order`.
+  1. **Partial Exits (Completed ✅)**:
+     - When TP1 is hit: close $50\%$ of the position quantity, credit partial profit to account balance, and record partial trade.
      - Move `Position.stop_loss` to `entry_price` (Breakeven / Risk-Free Trade).
-     - Let remaining $50\%$ run to TP2 (major liquidity pool or next swing high/low).
+     - Remaining $50\%$ runs to TP2.
   2. **Dynamic Trailing Stop Loss**:
      - Implement Chandelier Exit or EMA21-trailing stop once trade reaches $+1.5R$.
   3. **Schema Enhancement**:
-     - Add `qty_remaining` and `scaled_tp_levels` columns to `positions` table.
+     - Completed: `tp1_hit` and `tp2` on `Position` model.
 
 ### Plan 3: Portfolio Correlation, Sector Exposure & Machine Learning Ranker
 - **Goal**: Prevent catastrophic portfolio drawdown from correlated assets and rank signals by probability.

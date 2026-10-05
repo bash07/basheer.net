@@ -1,26 +1,8 @@
 """ATR indicator — registered into the global indicator registry."""
 from __future__ import annotations
 
-import pandas as pd
+from modules.finance._shared.indicators import calc_atr
 from . import register
-
-
-def calc_atr(df_ltf, period: int = 14) -> float:
-    """Calculate ATR scalar (latest bar) for any period."""
-    h = df_ltf["High"]
-    l = df_ltf["Low"]
-    c = df_ltf["Close"]
-
-    if len(df_ltf) < period:
-        return float((h.iloc[-1] - l.iloc[-1]) * 0.5)
-
-    tr = pd.concat(
-        [h - l, (h - c.shift(1)).abs(), (l - c.shift(1)).abs()],
-        axis=1,
-    ).max(axis=1)
-
-    result = tr.rolling(period).mean().iloc[-1]
-    return float(result) if result == result else float((h.iloc[-1] - l.iloc[-1]) * 0.5)
 
 
 @register("atr_14")

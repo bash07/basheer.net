@@ -46,13 +46,15 @@ class TAResult:
     potential_signals: list[str] = field(default_factory=list)
     ohlcv_json:        str       = ""
     ema_series:        dict      = field(default_factory=dict)  # name → list[float]
-
     rsi_series:     list[float] = field(default_factory=list)
+    volume_profile:    dict      = field(default_factory=dict)  # poc, vah, val
+    mtf_aligned:       bool | None = None
+    mtf_note:          str | None = None
 
 
 # ── Main computation ──────────────────────────────────────────────────────────
 
-def compute_ta(df, symbol: str, timeframe: str = "1d") -> TAResult:
+def compute_ta(df, symbol: str, timeframe: str = "1d", df_weekly=None) -> TAResult:
     """
     Compute RSI, EMAs, volume, trend, and crossovers from an OHLCV DataFrame.
 
@@ -61,6 +63,7 @@ def compute_ta(df, symbol: str, timeframe: str = "1d") -> TAResult:
                    and DatetimeIndex. Needs ≥ 210 rows for EMA200.
         symbol:    Ticker symbol (labelling only).
         timeframe: Timeframe string (labelling only).
+        df_weekly: Optional weekly OHLCV DataFrame for MTF trend alignment.
     """
     # All heavy imports are lazy here
     close  = df["Close"]
@@ -73,10 +76,11 @@ def compute_ta(df, symbol: str, timeframe: str = "1d") -> TAResult:
     rsi_sig   = _rsi_class(rsi_val)
 
     # EMAs
-    ema21  = close.ewm(span=21,  adjust=False).mean()
-    ema50  = close.ewm(span=50,  adjust=False).mean()
-    ema100 = close.ewm(span=100, adjust=False).mean()
-    ema200 = close.ewm(span=200, adjust=False).mean()
+    from modules.finance._shared.indicators import calc_ema
+    ema21  = calc_ema(close, 21)
+    ema50  = calc_ema(close, 50)
+    ema100 = calc_ema(close, 100)
+    ema200 = calc_ema(close, 200)
 
     emas = EMASet(
         ema21=float(ema21.iloc[-1]),   ema50=float(ema50.iloc[-1]),
@@ -108,6 +112,13 @@ def compute_ta(df, symbol: str, timeframe: str = "1d") -> TAResult:
         signals.append(f"Volume spike ({vol_ratio:.1f}× avg)")
     signals.extend(crossovers)
 
+    # Multi-timeframe (MTF) trend evaluation
+    mtf_aligned, mtf_note = (None, None)
+    if timeframe.lower() in ("1d", "daily"):
+        mtf_aligned, mtf_note = _evaluate_mtf(df, df_weekly, trend)
+        if mtf_aligned is False and mtf_note:
+            signals.append(f"⚠️ MTF Conflict: {mtf_note}")
+
     # Potential / Prospective setups
     potential_signals = _detect_potential_signals(close, rsi_s, ema21, ema50, ema200, current_price)
 
@@ -117,6 +128,18 @@ def compute_ta(df, symbol: str, timeframe: str = "1d") -> TAResult:
         "ema21":  ema21.tolist(), "ema50":  ema50.tolist(),
         "ema100": ema100.tolist(), "ema200": ema200.tolist(),
     }
+
+    # Volume profile (POC, VAH, VAL) for chart overlay
+    try:
+        from modules.finance._shared.indicators import calc_volume_profile
+        vp_core = calc_volume_profile(df, lookback=min(len(df), 100))
+        vp_dict = {
+            "poc": round(vp_core.poc, 4),
+            "vah": round(vp_core.vah, 4),
+            "val": round(vp_core.val, 4),
+        }
+    except Exception:
+        vp_dict = {}
 
     return TAResult(
         symbol=symbol, timeframe=timeframe,
@@ -129,19 +152,17 @@ def compute_ta(df, symbol: str, timeframe: str = "1d") -> TAResult:
         potential_signals=potential_signals,
         ohlcv_json=ohlcv_json, ema_series=ema_series,
         rsi_series=rsi_s.tolist(),
+        volume_profile=vp_dict,
+        mtf_aligned=mtf_aligned,
+        mtf_note=mtf_note,
     )
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
 def _rsi(close, period: int = 14):
-    delta    = close.diff()
-    gain     = delta.where(delta > 0, 0.0)
-    loss     = (-delta).where(delta < 0, 0.0)
-    avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
-    avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
-    rs = avg_gain / avg_loss.replace(0, float("inf"))
-    return 100 - (100 / (1 + rs))
+    from modules.finance._shared.indicators import calc_rsi
+    return calc_rsi(close, period=period)
 
 
 def _rsi_class(rsi: float | None) -> str:
@@ -437,6 +458,72 @@ def _ema_convergences(current_price: float, ema21, ema50, ema200) -> list[str]:
     return convs
 
 
+def _resample_weekly(df):
+    try:
+        import pandas as pd
+        if not isinstance(df.index, pd.DatetimeIndex) or len(df) < 50:
+            return None
+        agg = {}
+        for col in ("Open", "High", "Low", "Close", "Volume"):
+            if col in df.columns:
+                if col == "Open":
+                    agg[col] = "first"
+                elif col == "High":
+                    agg[col] = "max"
+                elif col == "Low":
+                    agg[col] = "min"
+                elif col == "Close":
+                    agg[col] = "last"
+                elif col == "Volume":
+                    agg[col] = "sum"
+        df_w = df.resample("W-FRI").agg(agg).dropna()
+        return df_w
+    except Exception:
+        return None
+
+
+def _evaluate_mtf(df, df_weekly, daily_trend: str) -> tuple[bool | None, str | None]:
+    """Check multi-timeframe alignment between 1D and 1W trends."""
+    if df_weekly is None:
+        df_weekly = _resample_weekly(df)
+
+    if df_weekly is None or len(df_weekly) < 20:
+        return None, None
+
+    try:
+        from modules.finance._shared.indicators import calc_ema
+        close_w = df_weekly["Close"]
+        fast_period = 21 if len(df_weekly) >= 50 else 10
+        slow_period = 50 if len(df_weekly) >= 50 else 20
+
+        ema_f = calc_ema(close_w, fast_period)
+        ema_s = calc_ema(close_w, slow_period)
+
+        c_val = float(close_w.iloc[-1])
+        f_val = float(ema_f.iloc[-1])
+        s_val = float(ema_s.iloc[-1])
+
+        if c_val > f_val > s_val:
+            w_trend = "bullish"
+        elif c_val < f_val < s_val:
+            w_trend = "bearish"
+        else:
+            w_trend = "mixed"
+
+        if daily_trend == "bullish" and w_trend == "bearish":
+            return False, "Weekly Bearish opposes Daily Bullish (Caution)"
+        elif daily_trend == "bearish" and w_trend == "bullish":
+            return False, "Weekly Bullish opposes Daily Bearish (Caution)"
+        elif daily_trend == "bullish" and w_trend == "bullish":
+            return True, "Bullish Alignment (1D + 1W)"
+        elif daily_trend == "bearish" and w_trend == "bearish":
+            return True, "Bearish Alignment (1D + 1W)"
+        else:
+            return None, f"1D {daily_trend.title()} / 1W {w_trend.title()}"
+    except Exception:
+        return None, None
+
+
 # ── Formatter ─────────────────────────────────────────────────────────────────
 
 def format_ta_summary(r: TAResult) -> str:
@@ -455,13 +542,17 @@ def format_ta_summary(r: TAResult) -> str:
         f"📊 *{r.symbol}* — {r.timeframe.upper()}",
         f"💵 Price: `{r.current_price:,.2f}`",
         f"{t_emoji} Trend: *{r.trend.title()} Alignment*",
+    ]
+    if r.mtf_note:
+        lines.append(f"🌐 MTF: *{r.mtf_note}*")
+    lines.extend([
         "——————————",
         f"RSI(14): `{rsi_str}` — {r.rsi_signal.title()} | Divergence: {div_str}",
         f"EMA21: `{r.emas.ema21:,.2f}` | EMA50: `{r.emas.ema50:,.2f}`",
         f"EMA100: `{r.emas.ema100:,.2f}` | EMA200: `{r.emas.ema200:,.2f}`",
         f"Volume: `{vol_str} avg` ({r.volume_signal.title()})",
         "——————————",
-    ]
+    ])
     if r.signals:
         lines.append("⚡ *Signals:*")
         lines.extend(f"  {s}" for s in r.signals)

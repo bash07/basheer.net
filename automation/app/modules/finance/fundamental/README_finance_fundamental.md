@@ -28,27 +28,29 @@ The **Fundamental Analysis Submodule** (`modules/finance/fundamental/`) provides
 ```
 automation/app/modules/finance/fundamental/
 ├── __init__.py           # Submodule registration & APScheduler job binding
-├── fetcher.py            # Financial statement extraction & FundamentalsData model
+├── fetcher.py            # Financial statement extraction, FundamentalsData model, 4Q margin trends
 ├── analyst.py            # LLM FinancialAnalystAgent & template fallback generator
-├── formatter.py          # Telegram HTML card formatting & tables
+├── formatter.py          # Telegram HTML card formatting, margin warnings & tables
 ├── commands.py           # Slash command handlers (/fundamental, /screen, /earnings)
-├── jobs.py               # Scheduled jobs (weekly Graham screen & earnings alerts)
+├── jobs.py               # Scheduled jobs (weekly value screen & earnings alerts)
 └── strategies/           # Pluggable valuation strategy package
-    ├── __init__.py       # Strategy registry & resolver
+    ├── __init__.py       # Strategy registry (graham, lynch, buffett) & get_strategy()
     ├── base.py           # Abstract BaseStrategy, CriterionResult, StrategyResult
-    └── graham.py         # Benjamin Graham 6-factor value strategy implementation
+    ├── graham.py         # Benjamin Graham 6-factor value strategy implementation
+    ├── lynch.py          # Peter Lynch GARP (Growth at a Reasonable Price) strategy
+    └── buffett.py        # Warren Buffett Quality & Moat strategy
 ```
 
 ### Component Breakdown
 
 | Component | Responsibility |
 | :--- | :--- |
-| `fetcher.py` | Fetches corporate metrics from `Ticker.info` and calculates derived metrics (e.g. 5Y EPS CAGR). |
-| `strategies/graham.py` | Implements Graham's 6 mathematical value criteria and computes compliance scores. |
+| `fetcher.py` | Fetches corporate metrics from `Ticker.info` and calculates 4-quarter operating/gross margin compression. |
+| `strategies/` | Evaluates strategies: `graham` (Graham 6-factor), `lynch` (PEG & growth), `buffett` (ROE & margin quality). |
 | `analyst.py` | Dispatches prompts to `FinancialAnalystAgent` via `core.llm.get_model()`. |
-| `formatter.py` | Formats criteria tables, score indicators (`✅`, `❌`, `⚪`), and earnings dates. |
+| `formatter.py` | Formats criteria tables, score indicators (`✅`, `❌`, `⚪`), margin alerts, and earnings dates. |
 | `jobs.py` | Runs the Sunday 08:00 AM IST watchlist screen and daily earnings checks. |
-| `commands.py` | Exposes `/fundamental`, `/screen`, and `/earnings` commands. |
+| `commands.py` | Exposes `/fundamental`, `/screen`, and `/earnings` commands (supporting `graham`, `lynch`, `buffett`). |
 
 ---
 
@@ -69,6 +71,34 @@ The default strategy implements the classical value investing checklist establis
 - **Strong Value** ($\ge 5 / 6$): Meets institutional margin of safety standards.
 - **Moderate Value** ($3–4 / 6$): Meets key solvency criteria but may trade at a premium.
 - **Fails Value Screen** ($< 3 / 6$): Insufficient margin of safety or high balance sheet risk.
+
+---
+
+### 3.2 Peter Lynch GARP Strategy (`lynch`)
+Screens for growth companies trading at a reasonable valuation using Peter Lynch's methodology:
+1. **PEG Ratio**: $\text{Trailing P/E} / (\text{EPS Growth} \times 100) \le 1.0$ (fair value / undervalued relative to earnings growth).
+2. **EPS Growth**: $\text{TTM EPS Growth} > 5.0\%$ (sustainable positive earnings momentum).
+3. **Debt-to-Equity**: $\text{Debt/Equity} < 0.80$ (prudent balance sheet leverage).
+4. **Current Ratio**: $\text{Current Ratio} > 1.20$ (adequate liquidity).
+5. **P/E Ratio**: $\text{Trailing P/E} < 35.0$ (avoids speculative valuation multiples).
+
+---
+
+### 3.3 Warren Buffett Quality & Moat Strategy (`buffett`)
+Evaluates economic moat durability, pricing power, and return on capital:
+1. **Return on Equity (ROE)**: $\text{ROE} \ge 15.0\%$ (exceptional compound return on shareholder equity).
+2. **Profit Margin**: $\text{Net Profit Margin} \ge 12.0\%$ (strong pricing power and high operating margins).
+3. **Debt-to-Equity**: $\text{Debt/Equity} \le 0.60$ (conservative financial structure).
+4. **Current Ratio**: $\text{Current Ratio} \ge 1.50$ (bulletproof working capital).
+5. **EPS Growth**: $\text{EPS Growth} > 5.0\%$ (demonstrated earnings compounding).
+6. **Valuation**: $\text{Trailing P/E} < 25.0$ (avoids overpaying for quality).
+
+---
+
+### 3.4 Trailing 4-Quarter Margin Compression Engine
+- Automatically extracts quarterly income statements across the trailing 4 reported quarters via `yfinance`.
+- Tracks quarterly **operating margin** and **gross margin** trajectory.
+- **Alert Flag**: If operating margins decline across 3 consecutive quarters, generates an explicit `margin_trend_warning` formatted as `⚠️ Margin Alert: Margin Compression Alert: Operating margin has declined for 3 consecutive quarters...` within the `/fundamental` report to warn of operational cost inflation prior to earnings.
 
 ---
 

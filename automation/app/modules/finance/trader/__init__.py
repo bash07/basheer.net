@@ -32,6 +32,7 @@ def register(bot_app, scheduler, authorized) -> dict:
         positions_command,
         close_command,
         account_command,
+        resume_command,
     )
     from .jobs import scan_all_tickers
 
@@ -44,6 +45,7 @@ def register(bot_app, scheduler, authorized) -> dict:
     bot_app.add_handler(CommandHandler("positions",   positions_command,   filters=authorized))
     bot_app.add_handler(CommandHandler("close",       close_command,       filters=authorized))
     bot_app.add_handler(CommandHandler("account",     account_command,     filters=authorized))
+    bot_app.add_handler(CommandHandler("resume",      resume_command,      filters=authorized))
 
     # Inline button callbacks (no auth filter — callback_query already scoped by chat_id in bot.py)
     bot_app.add_handler(
@@ -64,7 +66,7 @@ def register(bot_app, scheduler, authorized) -> dict:
     return {
         "name":        NAME,
         "description": DESCRIPTION,
-        "commands":    ["scan", "setups", "traderbias", "confluence", "performance", "positions", "close", "account"],
+        "commands":    ["scan", "setups", "traderbias", "confluence", "performance", "positions", "close", "account", "resume"],
         "help": [
             "`/scan [ticker]`       — Force trade scan on full watchlist or one ticker",
             "`/setups`              — List active setups from the last 48 hours",
@@ -74,5 +76,6 @@ def register(bot_app, scheduler, authorized) -> dict:
             "`/close <id>`          — Manually exit an open position at market price",
             "`/account`             — Paper trading account balance, equity & stats",
             "`/performance`         — Live performance stats (OMS trades & signals)",
+            "`/resume`              — Reset OMS Circuit Breaker kill switch",
         ],
     }

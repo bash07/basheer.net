@@ -108,16 +108,26 @@ To prevent false positives (such as flat-top consolidations or micro-noise in in
 - **Volume Spike**: Current volume $\ge 2.0 \times$ 20-period simple moving average of volume.
 - **Bollinger Bands**: 20-period SMA $\pm 2.0$ standard deviations; tracks band squeezes and touches.
 
+### 3.5 Multi-Timeframe (MTF) Trend Alignment
+- **Concept**: Cross-evaluates the Daily (1D) momentum trend against the Weekly (1W) EMA trend stack (21 vs. 50 EMA).
+- **Auto-Resampling**: Automatically aggregates daily candles into Friday-close weekly candles when explicit weekly data is omitted.
+- **Alignment Signals**:
+  - `Aligned Bullish`: 1D bullish + 1W bullish.
+  - `Aligned Bearish`: 1D bearish + 1W bearish.
+  - `⚠️ MTF Conflict`: Daily trend conflicts with the higher-timeframe weekly regime (e.g. Daily Bullish rally into a Weekly Bearish downtrend), tagging setups with caution warnings.
+
 ---
 
-## 4. Subprocess Chart Rendering
+## 4. Subprocess Chart Rendering & Volume Profile Overlay
 
 To prevent memory bloat from Matplotlib and `mplfinance` inside the long-running async bot process, chart rendering runs in a separate process:
 
-1. `technical/charts.py` serializes the OHLCV dataframe and indicator overlays.
+1. `technical/charts.py` serializes the OHLCV dataframe, indicator overlays, and Volume Profile levels.
 2. It invokes `modules/finance/_shared/chart_renderer.py` via Python `subprocess.run()`.
 3. The isolated renderer configures a dark theme canvas:
-   - **Panel 0 (Top)**: Candlestick price action with EMA 21, EMA 50, and EMA 200 overlays.
+   - **Panel 0 (Top)**: Candlestick price action with EMA 21, EMA 50, and EMA 200 overlays, plus **Volume Profile levels**:
+     - **POC (Point of Control)**: Golden dashed line (`#f1c40f`).
+     - **VAH / VAL (Value Area)**: Blue dashed lines (`#3498db`) with a translucent 70% volume area span.
    - **Panel 1 (Middle)**: Volume bars with 20-period volume MA line.
    - **Panel 2 (Bottom)**: RSI 14 line with 70/30 reference threshold levels.
 4. The chart is rendered directly to an in-memory PNG buffer and sent to Telegram via `bot.send_photo()`.

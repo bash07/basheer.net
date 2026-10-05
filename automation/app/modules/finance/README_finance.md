@@ -50,27 +50,28 @@
 finance/
 ├── __init__.py              # registers all submodules with the platform
 ├── _shared/
-│   ├── cache.py             # TTLCache singletons (ticker, coingecko, feargreed, fundamentals)
+│   ├── cache.py             # TTLCache (RAM + SQLite L2 persistent disk cache)
+│   ├── indicators/          # Unified vectorized indicators (EMA, SMA, RSI, ATR, VP)
 │   ├── extrema.py           # NumPy-native relative extrema detection (avoids heavy SciPy dependency)
 │   ├── market_hours.py      # is_market_open(category) → bool
 │   ├── notify.py            # notify(text) / notify_photo(path) — no Update needed
-│   └── chart_renderer.py    # subprocess-based matplotlib chart renderer
+│   └── chart_renderer.py    # subprocess-based matplotlib chart renderer with Volume Profile
 ├── watchlist/
-│   ├── models.py            # WatchlistEntry, PriceAlert (SQLAlchemy)
+│   ├── models.py            # WatchlistEntry, PriceAlert (Static & Trailing) (SQLAlchemy)
 │   ├── commands.py          # /watch, /unwatch, /watchlist, /price, /prices,
-│   │                        #   /alert, /alerts, /delalert
+│   │                        #   /alert (trail), /alerts, /delalert
 │   ├── prices.py            # fetch_price_detail, fetch_prices_batch helpers
 │   ├── jobs.py              # check_price_alerts (5 min), daily_summary (9 AM IST)
 │   └── __init__.py          # register() wires commands + jobs
 ├── technical/
 │   ├── models.py            # SignalLog (SQLAlchemy)
-│   ├── indicators.py        # compute_ta(df) → TAResult (pure, no I/O)
+│   ├── indicators.py        # compute_ta(df) → TAResult (delegated, MTF alignment)
 │   ├── charts.py            # fetch_and_render, fetch_ta_only (yfinance + renderer)
 │   ├── commands.py          # /ta, /rsi, /chart, /signals
 │   ├── jobs.py              # scan_signals (every 30 min, market hours only)
 │   └── __init__.py          # register() wires commands + jobs
 └── fundamental/
-    ├── fetcher.py           # FundamentalsData + fetch_fundamentals() — 24h cache
+    ├── fetcher.py           # FundamentalsData + fetch_fundamentals() — 4Q margin trends
     ├── analyst.py           # generate_verdict() — LLM + template fallback
     ├── formatter.py         # format_full_report, format_screen_report, format_earnings_list
     ├── commands.py          # /fundamental, /screen, /earnings
@@ -79,7 +80,9 @@ finance/
     └── strategies/
         ├── base.py          # CriterionResult, StrategyResult, BaseStrategy ABC
         ├── graham.py        # GrahamStrategy — 6 classic value criteria
-        └── __init__.py      # STRATEGIES dict + DEFAULT_METHOD
+        ├── lynch.py         # LynchStrategy — Peter Lynch GARP criteria
+        ├── buffett.py       # BuffettStrategy — Warren Buffett Quality criteria
+        └── __init__.py      # STRATEGIES dict, DEFAULT_METHOD, get_strategy()
 ```
 
 Data flows one way: `commands.py` / `jobs.py` → `prices.py` / `indicators.py` → `_shared/cache.py` → yfinance. No submodule imports from another submodule except through `_shared/`.
@@ -196,16 +199,19 @@ Sends "⏳ Fetching prices…" first, then edits to the result. Uses `fetch_pric
 
 ---
 
-#### `/alert <ticker> > <price>` or `/alert <ticker> < <price>`
-Set a price threshold alert for a watchlisted ticker.
+#### `/alert <ticker> > <price>` or `/alert <ticker> < <price>` or `/alert <ticker> trail -<pct>%`
+Set a price alert for a watchlisted ticker (supports static threshold or trailing percentage pullback).
 
 ```
 /alert BTC-USD > 70000
 /alert AAPL < 170
+/alert AAPL trail -5%
+/alert BTC-USD trail -8%
 ```
 
 - Ticker **must be in the watchlist** first
-- Condition must be `>` or `<`
+- Static alerts: condition must be `>` or `<`
+- Trailing alerts: tracks the peak price reached and alerts if the price drops by the specified trailing percentage
 - Price can include commas: `70,000` is accepted
 - Stores a `PriceAlert` row; the 5-min job evaluates it automatically
 
@@ -465,14 +471,18 @@ The module uses a **pluggable strategy pattern** so new investment frameworks ca
 ```
 strategies/
 ├── base.py       — CriterionResult, StrategyResult, BaseStrategy ABC
-├── graham.py     — GrahamStrategy (first built-in)
-└── __init__.py   — STRATEGIES = {"graham": GrahamStrategy, ...}
+├── graham.py     — GrahamStrategy (classic value criteria)
+├── lynch.py      — LynchStrategy (Peter Lynch GARP / PEG criteria)
+├── buffett.py    — BuffettStrategy (Warren Buffett Quality & Moat criteria)
+└── __init__.py   — STRATEGIES = {"graham": ..., "lynch": ..., "buffett": ...}
 ```
 
-**Adding a new strategy** (e.g. Peter Lynch):
-1. Create `strategies/lynch.py` with `class LynchStrategy(BaseStrategy)`
-2. Add `"lynch": LynchStrategy` to `STRATEGIES` in `__init__.py`
-3. Done — `/fundamental AAPL --method lynch` works immediately
+**Built-in strategies available out of the box:**
+1. `graham`: Benjamin Graham 6-factor value screen (default)
+2. `lynch`: Peter Lynch Growth at a Reasonable Price (PEG $\le 1.0$)
+3. `buffett`: Warren Buffett Quality (ROE $\ge 15\%$, net profit margin $\ge 12\%$)
+
+Use `/fundamental <ticker> [method]` or `/screen [method]`.
 
 **`StrategyResult` key properties:**
 

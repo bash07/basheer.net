@@ -102,7 +102,11 @@ class Broker(ABC):
         ...
 
     @abstractmethod
-    def get_account_info(self, open_positions: Optional[list] = None) -> AccountInfo:
+    def get_account_info(
+        self,
+        open_positions: Optional[list] = None,
+        db=None,
+    ) -> AccountInfo:
         """Return current account balance and equity."""
         ...
 

@@ -17,23 +17,73 @@ FUNDAMENTAL_CATEGORIES = frozenset({"us_stock", "indian_stock"})
 class FundamentalsData:
     symbol:           str
     display_name:     str
-    sector:           str | None
-    industry:         str | None
-    market_cap:       float | None   # USD
+    sector:           str | None = None
+    industry:         str | None = None
+    market_cap:       float | None = None   # USD
     # Valuation
-    pe_ratio:         float | None   # Trailing P/E
-    pb_ratio:         float | None   # Price-to-Book
+    pe_ratio:         float | None = None   # Trailing P/E
+    pb_ratio:         float | None = None   # Price-to-Book
     # Financial health
-    current_ratio:    float | None   # Current Assets / Current Liabilities
-    debt_to_equity:   float | None   # D/E (decimal; yfinance reports %, we divide /100)
+    current_ratio:    float | None = None   # Current Assets / Current Liabilities
+    debt_to_equity:   float | None = None   # D/E (decimal; yfinance reports %, we divide /100)
     # Income quality
-    dividend_yield:   float | None   # decimal (0.015 = 1.5%)
-    eps_growth:       float | None   # TTM EPS growth (decimal)
-    revenue_growth:   float | None   # TTM revenue growth (decimal)
-    roe:              float | None   # Return on Equity
-    profit_margin:    float | None   # Net profit margin
+    dividend_yield:   float | None = None   # decimal (0.015 = 1.5%)
+    eps_growth:       float | None = None   # TTM EPS growth (decimal)
+    revenue_growth:   float | None = None   # TTM revenue growth (decimal)
+    roe:              float | None = None   # Return on Equity
+    profit_margin:    float | None = None   # Net profit margin
     # Calendar
-    next_earnings_date: date | None
+    next_earnings_date: date | None = None
+    # Quarterly margins trend (trailing 4Q)
+    margin_trend_warning: str | None = None
+    quarterly_margins: list[dict] | None = None
+
+
+def _compute_margin_trends(ticker) -> tuple[str | None, list[dict]]:
+    """Compute operating and gross margin trends across trailing quarters."""
+    try:
+        q_financials = getattr(ticker, "quarterly_financials", None)
+        if q_financials is None or q_financials.empty:
+            q_financials = getattr(ticker, "quarterly_income_stmt", None)
+        if q_financials is None or q_financials.empty:
+            return None, []
+
+        cols = list(q_financials.columns)[:4]  # Up to 4 quarters
+        margins = []
+        for col in reversed(cols):  # Oldest to newest
+            rev = None
+            for rk in ("Total Revenue", "Operating Revenue", "Revenue"):
+                if rk in q_financials.index:
+                    rev = q_financials.loc[rk, col]
+                    break
+
+            op_inc = None
+            for ok in ("Operating Income", "Net Income from Continuing Operation Net Minority Interest", "Net Income"):
+                if ok in q_financials.index:
+                    op_inc = q_financials.loc[ok, col]
+                    break
+
+            gross = q_financials.loc["Gross Profit", col] if "Gross Profit" in q_financials.index else None
+
+            op_margin = (op_inc / rev) if (rev and op_inc is not None and rev > 0) else None
+            gross_margin = (gross / rev) if (rev and gross is not None and rev > 0) else None
+
+            date_str = str(col.date()) if hasattr(col, "date") else str(col)
+            margins.append({
+                "date": date_str,
+                "operating_margin": round(op_margin, 4) if op_margin is not None else None,
+                "gross_margin": round(gross_margin, 4) if gross_margin is not None else None,
+            })
+
+        # Detect consecutive decline
+        op_vals = [m["operating_margin"] for m in margins if m["operating_margin"] is not None]
+        if len(op_vals) >= 3 and op_vals[-1] < op_vals[-2] < op_vals[-3]:
+            warning = f"Margin Compression Alert: Operating margin has declined for 3 consecutive quarters ({op_vals[-3]:.1%} → {op_vals[-2]:.1%} → {op_vals[-1]:.1%})."
+            return warning, margins
+
+        return None, margins
+    except Exception:
+        return None, []
 
 
 def fetch_fundamentals(symbol: str) -> FundamentalsData:
@@ -71,6 +121,8 @@ def fetch_fundamentals(symbol: str) -> FundamentalsData:
     raw_de = info.get("debtToEquity")
     debt_to_equity = (raw_de / 100.0) if raw_de is not None else None
 
+    warning, q_margins = _compute_margin_trends(ticker)
+
     result = FundamentalsData(
         symbol=symbol,
         display_name=info.get("longName") or info.get("shortName") or symbol,
@@ -87,6 +139,8 @@ def fetch_fundamentals(symbol: str) -> FundamentalsData:
         roe=info.get("returnOnEquity"),
         profit_margin=info.get("profitMargins"),
         next_earnings_date=_earnings_date(ticker),
+        margin_trend_warning=warning,
+        quarterly_margins=q_margins,
     )
     fundamentals_cache.set(key, result)
     return result

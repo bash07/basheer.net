@@ -138,8 +138,9 @@ class YFinanceProvider(DataProvider):
         target_resample = "4h" if interval == "4h" else resample_to
 
         cache_key = f"{self._CACHE_PREFIX}{symbol}:{interval}:{period or ''}:{start}:{end}"
+        alt_key = f"ohlcv:{symbol}:{period or ''}:{interval}"
         if ticker_cache:
-            cached = ticker_cache.get(cache_key)
+            cached = ticker_cache.get(cache_key) or ticker_cache.get(alt_key)
             if cached is not None:
                 return cached
 

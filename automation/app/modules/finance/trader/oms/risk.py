@@ -23,11 +23,17 @@ class RiskManager:
         max_open_positions: int = 5,          # Max concurrent open positions
         max_account_risk_pct: float = 0.05,  # Max 5% aggregate open portfolio risk
         max_position_size_pct: float = 0.25, # Max 25% account equity in a single position
+        max_daily_drawdown_pct: float = 0.03, # Max 3% realized loss in trailing 24h
+        max_consecutive_losses: int = 3,      # Max 3 consecutive stop outs
     ) -> None:
         self.risk_per_trade_pct = risk_per_trade_pct
         self.max_open_positions = max_open_positions
         self.max_account_risk_pct = max_account_risk_pct
         self.max_position_size_pct = max_position_size_pct
+        self.max_daily_drawdown_pct = max_daily_drawdown_pct
+        self.max_consecutive_losses = max_consecutive_losses
+        self.circuit_breaker_halted: bool = False
+        self.halt_reason: str = ""
         self._load_config_overrides()
 
     def _load_config_overrides(self) -> None:
@@ -43,6 +49,10 @@ class RiskManager:
                 self.max_account_risk_pct = float(cfg["max_account_risk_pct"])
             if "max_position_size_pct" in cfg:
                 self.max_position_size_pct = float(cfg["max_position_size_pct"])
+            if "max_daily_drawdown_pct" in cfg:
+                self.max_daily_drawdown_pct = float(cfg["max_daily_drawdown_pct"])
+            if "max_consecutive_losses" in cfg:
+                self.max_consecutive_losses = int(cfg["max_consecutive_losses"])
         except Exception as e:
             logger.debug("[oms.risk] Could not load config overrides: %s", e)
 
@@ -111,6 +121,73 @@ class RiskManager:
 
         return qty, actual_risk, note
 
+    def check_circuit_breaker(self, db, equity: float) -> tuple[bool, str]:
+        """Evaluate circuit breaker rules against recent trade ledger.
+        
+        Rules:
+          1. Explicit manual or automated halt.
+          2. Trailing 24h realized drawdown exceeds max_daily_drawdown_pct.
+          3. Consecutive losing trades exceed max_consecutive_losses.
+        """
+        if self.circuit_breaker_halted:
+            return True, f"Trading halted by Circuit Breaker: {self.halt_reason}"
+
+        if db is None:
+            return False, ""
+
+        from datetime import datetime, timezone, timedelta
+        from sqlalchemy import select
+        from ..models import Trade
+
+        trades = db.execute(
+            select(Trade).order_by(Trade.closed_at.desc())
+        ).scalars().all()
+
+        if not trades:
+            return False, ""
+
+        # Check consecutive losses
+        consecutive_losses = 0
+        for t in trades:
+            if t.outcome == "LOSS":
+                consecutive_losses += 1
+            elif t.outcome == "WIN":
+                break
+
+        if consecutive_losses >= self.max_consecutive_losses:
+            self.circuit_breaker_halted = True
+            self.halt_reason = f"{consecutive_losses} consecutive stop-outs (limit {self.max_consecutive_losses})"
+            logger.warning("[oms.risk] CIRCUIT BREAKER TRIGGERED: %s", self.halt_reason)
+            return True, self.halt_reason
+
+        # Check 24h drawdown
+        cutoff_24h = datetime.now(timezone.utc) - timedelta(hours=24)
+        recent_trades = [
+            t for t in trades
+            if t.closed_at and (
+                t.closed_at.replace(tzinfo=timezone.utc) if t.closed_at.tzinfo is None else t.closed_at
+            ) >= cutoff_24h
+        ]
+        realised_24h = sum((t.realised_pnl or 0.0) for t in recent_trades)
+        if equity > 0 and realised_24h < 0:
+            loss_pct = abs(realised_24h) / equity
+            if loss_pct >= self.max_daily_drawdown_pct:
+                self.circuit_breaker_halted = True
+                self.halt_reason = (
+                    f"24h drawdown -{loss_pct*100:.1f}% exceeds limit "
+                    f"(-{self.max_daily_drawdown_pct*100:.1f}%, ${abs(realised_24h):,.2f})"
+                )
+                logger.warning("[oms.risk] CIRCUIT BREAKER TRIGGERED: %s", self.halt_reason)
+                return True, self.halt_reason
+
+        return False, ""
+
+    def resume_trading(self) -> None:
+        """Reset the circuit breaker halt state."""
+        self.circuit_breaker_halted = False
+        self.halt_reason = ""
+        logger.info("[oms.risk] Circuit breaker reset: trading resumed.")
+
     def validate_new_position(
         self,
         db,
@@ -123,6 +200,11 @@ class RiskManager:
         Returns:
             (is_valid, reason)
         """
+        # 0. Check circuit breaker / kill switch
+        halted, halt_msg = self.check_circuit_breaker(db, equity)
+        if halted:
+            return False, f"CIRCUIT BREAKER: {halt_msg}"
+
         from sqlalchemy import select
         from ..models import Position
 

@@ -65,3 +65,19 @@ class TestTTLCache:
         assert isinstance(ticker_cache,    TTLCache)
         assert isinstance(coingecko_cache, TTLCache)
         assert isinstance(feargreed_cache, TTLCache)
+
+    def test_persistence_across_instances(self, tmp_path):
+        """Test that data written to disk cache survives across cache instances."""
+        db_file = str(tmp_path / "test_cache.db")
+        c1 = TTLCache(ttl_seconds=60, name="persistent_test", db_path=db_file, persist=True)
+        c1.set("persisted_key", {"data": [1, 2, 3], "status": "ok"})
+        assert c1.get("persisted_key") == {"data": [1, 2, 3], "status": "ok"}
+
+        # Create new cache instance pointing to same SQLite database
+        c2 = TTLCache(ttl_seconds=60, name="persistent_test", db_path=db_file, persist=True)
+        # Should read from L2 disk cache even though L1 memory cache is empty
+        assert "persisted_key" not in c2._store
+        assert c2.get("persisted_key") == {"data": [1, 2, 3], "status": "ok"}
+        # And should be promoted to L1
+        assert "persisted_key" in c2._store
+

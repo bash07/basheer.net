@@ -87,6 +87,8 @@ class Position(Base):
     entry_price: Mapped[float] = mapped_column(Float)
     stop_loss:   Mapped[float] = mapped_column(Float)
     take_profit: Mapped[float] = mapped_column(Float)        # TP1
+    tp2:         Mapped[Optional[float]] = mapped_column(Float, nullable=True) # TP2
+    tp1_hit:     Mapped[bool]  = mapped_column(Boolean, default=False)
     qty:         Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # units / contracts
 
     # "OPEN" | "CLOSED" | "CANCELLED"
@@ -204,4 +206,31 @@ class Order(Base):
             f"<Order id={self.id} {self.ticker} {self.side} {self.qty} "
             f"[{self.status}] @ {self.filled_price or self.price}>"
         )
+
+
+class AccountBalance(Base):
+    """Persistent account balance ledger for brokers (e.g. PaperBroker).
+    
+    Replaces paper_account.json to guarantee ACID transactional consistency
+    with orders and positions within SQLite.
+    """
+
+    __tablename__ = "account_balances"
+
+    id:                 Mapped[int]      = mapped_column(Integer, primary_key=True)
+    broker:             Mapped[str]      = mapped_column(String(30), unique=True, index=True)
+    currency:           Mapped[str]      = mapped_column(String(10), default="USD")
+    initial_balance:    Mapped[float]    = mapped_column(Float, default=10_000.0)
+    cash:               Mapped[float]    = mapped_column(Float, default=10_000.0)
+    total_realised_pnl: Mapped[float]    = mapped_column(Float, default=0.0)
+    updated_at:         Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<AccountBalance broker={self.broker} cash={self.cash} "
+            f"realised_pnl={self.total_realised_pnl} currency={self.currency}>"
+        )
+
 

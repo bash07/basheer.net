@@ -85,6 +85,25 @@ if has_rsi:
         ),
     ])
 
+# ── Volume Profile Overlays (POC, VAH, VAL) ──────────────────────────────────
+vp = params.get("volume_profile", {})
+if vp and "poc" in vp and "vah" in vp and "val" in vp:
+    poc_val = float(vp["poc"])
+    vah_val = float(vp["vah"])
+    val_val = float(vp["val"])
+    # POC (Gold solid line)
+    addplots.append(
+        mpf.make_addplot(pd.Series(poc_val, index=df.index), color="#ffd700", linestyle="-", width=1.4)
+    )
+    # VAH (Light blue dashed)
+    addplots.append(
+        mpf.make_addplot(pd.Series(vah_val, index=df.index), color="#64b5f6", linestyle="--", width=1.0)
+    )
+    # VAL (Light purple dashed)
+    addplots.append(
+        mpf.make_addplot(pd.Series(val_val, index=df.index), color="#ba68c8", linestyle="--", width=1.0)
+    )
+
 # ── Style ─────────────────────────────────────────────────────────────────────
 mc = mpf.make_marketcolors(
     up="#26a69a", down="#ef5350",

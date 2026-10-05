@@ -49,7 +49,7 @@ flowchart TD
 | **Telegram Gateway** | [`core/bot.py`](core/bot.py) | Application initialization, authentication filtering (`authorized_only`), webhook/polling routing, error handling. |
 | **System Versioning** | [`core/version.py`](core/version.py) | Dynamic build metadata tracking (`v1.2.1`, git commit hash, build date, and change summary) for `/status`, `/version`, and API health checks. |
 | **Module Registry** | [`core/registry.py`](core/registry.py) | Recursively scans `modules/`, executes module `register()`, collects slash commands, schedules jobs, and builds interactive `/help`. |
-| **Database Engine** | [`core/db.py`](core/db.py) | SQLite connection pool, `Base` metadata, auto-migration engine for schema changes, cross-environment path resolution. |
+| **Database Engine** | [`core/db.py`](core/db.py) | SQLite connection pool with Write-Ahead Logging (`WAL`), `busy_timeout=5000`, `synchronous=NORMAL`, `Base` metadata, auto-migration engine, and cross-environment path resolution. |
 | **LLM Gateway** | [`core/llm.py`](core/llm.py) | Multi-provider orchestration (Gemini, OpenRouter, OpenAI-compatible), automatic fallback tier on 503/429/524, and nano-tier delegation. |
 | **Scheduler** | [`core/scheduler.py`](core/scheduler.py) | APScheduler background daemon managing recurring jobs. |
 | **AI Assistant** | [`core/chat.py`](core/chat.py) | Conversational context buffer, tool declaration, dynamic tool dispatching. |
@@ -63,42 +63,44 @@ The `finance/` folder is a **Domain Namespace Package**. It contains 4 business 
 ```mermaid
 flowchart TD
     subgraph FinanceShared["Shared Utilities (finance/_shared/)"]
-        CACHE["cache.py\nIn-Memory Cache (TTL)"]
+        CACHE["cache.py\n2-Tier Cache (RAM + L2 Disk SQLite)"]
+        IND_CORE["indicators/\nUnified Vectorized Indicators"]
         EXTREMA["extrema.py\nNumPy-Native Extrema (No SciPy)"]
-        CHART["chart_renderer.py\nSubprocess Matplotlib / mplfinance"]
+        CHART["chart_renderer.py\nSubprocess mplfinance + Volume Profile"]
         HOURS["market_hours.py\nUS/IN/Crypto Sessions"]
         NOTIFY["notify.py\nProactive Telegram Push"]
     end
 
     subgraph WatchlistSub["Watchlist (finance/watchlist/)"]
-        W_MOD["models.py\nWatchlistEntry"]
+        W_MOD["models.py\nWatchlistEntry, PriceAlert (Static & Trailing)"]
         W_PRC["prices.py\nBatch Pricing & Changes"]
-        W_CMD["commands.py\n/watch, /unwatch, /watchlist"]
-        W_JOB["jobs.py\nPeriodic Price Snapshot"]
+        W_CMD["commands.py\n/watch, /unwatch, /alert (trail), /prices"]
+        W_JOB["jobs.py\nDaily Brief (9 AM) & Alert Probes"]
     end
 
     subgraph TechnicalSub["Technical Analysis (finance/technical/)"]
-        T_IND["indicators.py\nRSI, MACD, BB, SMA/EMA"]
-        T_CHT["charts.py\nAnnotated Visualizations"]
-        T_CMD["commands.py\n/ta, /chart"]
-        T_JOB["jobs.py\nDaily/Weekly TA Digest"]
+        T_IND["indicators.py\nDelegates to _shared/indicators\nMTF Trend Alignment (1D + 1W)"]
+        T_CHT["charts.py\nAnnotated Visualizations + Volume Profile"]
+        T_CMD["commands.py\n/ta, /rsi, /chart, /signals"]
+        T_JOB["jobs.py\nDaily/Weekly TA Digest & Scans"]
     end
 
     subgraph FundamentalSub["Fundamental Analysis (finance/fundamental/)"]
-        F_FET["fetcher.py\nFinancial Metrics & Ratios"]
+        F_FET["fetcher.py\nFinancial Metrics & 4Q Margin Trends"]
         F_ANA["analyst.py\nLLM Fundamental Reports"]
-        F_CMD["commands.py\n/fundamental, /screen"]
+        F_STR["strategies/\nGraham, Lynch GARP, Buffett Quality"]
+        F_CMD["commands.py\n/fundamental, /screen, /earnings"]
         F_JOB["jobs.py\nEarnings & Valuations"]
     end
 
     subgraph TraderSub["Algorithmic Trading & OMS (finance/trader/)"]
-        DATA["data.py\nMulti-Provider Ingestion"]
-        IND["indicators/\nParametric Registry"]
+        DATA["data.py\nMulti-Provider Ingestion + Shared Cache"]
+        IND["indicators/\nParametric Registry (Delegated)"]
         BIAS["bias.py\nHTF Bias Engines"]
         SCAN["scanner.py\nICT / SMC Detectors"]
         CONF["confluence.py\nVolume Profile & S/R"]
         STRAT["strategies/\nPlugin Framework"]
-        OMS["oms/\nBroker, Risk, Engine"]
+        OMS["oms/\nPaperBroker (SQLite AccountBalance), Risk (Circuit Breaker), Engine (Partial TP)"]
     end
 
     FinanceShared --> WatchlistSub
@@ -109,29 +111,29 @@ flowchart TD
 
 ### 3.1. `finance/watchlist/` — Asset Registry & Price Engine
 - **Documentation**: Dedicated guide in [modules/finance/watchlist/README_finance_watchlist.md](modules/finance/watchlist/README_finance_watchlist.md) and overview in [modules/finance/README_finance.md#2-watchlist-module](modules/finance/README_finance.md#2-watchlist-module)
-- **Purpose**: Tracks symbols across categories (`us_stock`, `india_stock`, `crypto`, `forex`, `commodity`, `index`), manages threshold price alerts, and dispatches the daily morning briefing (which combines multi-category price changes with the last 24h of technical alerts from `SignalLog`).
-- **Data Model**: `WatchlistEntry` (`id`, `symbol`, `category`, `added_at`, `notes`), `PriceAlert`.
+- **Purpose**: Tracks symbols across categories (`us_stock`, `india_stock`, `crypto`, `forex`, `commodity`, `index`), manages static threshold and trailing percentage price alerts (`/alert <symbol> trail -5%`), and dispatches the daily morning briefing.
+- **Data Model**: `WatchlistEntry` (`id`, `symbol`, `category`, `added_at`, `notes`), `PriceAlert` (`alert_type`, `target_price`, `trail_pct`, `peak_price`).
 - **Engine**: [`prices.py`](modules/finance/watchlist/prices.py) provides parallel batch fetching via yfinance, 24h delta computations, and formatted summaries.
 
 ### 3.2. `finance/technical/` — Classical Indicator & Charting Suite
 - **Documentation**: Dedicated guide in [modules/finance/technical/README_finance_technical.md](modules/finance/technical/README_finance_technical.md) and overview in [modules/finance/README_finance.md#3-technical-analysis-module](modules/finance/README_finance.md#3-technical-analysis-module)
-- **Purpose**: Classical indicators, multi-timeframe candlestick calculations, multi-extrema RSI divergence detection with swing validation, prospective setup monitoring, and visual snapshot charts for Telegram.
-- **Engine**: Computes RSI(14) with boundary-crossing triggers, EMA 21/50/100/200, crossover alerts, and potential curling setups; leverages 100% NumPy-native extrema (`extrema.py`) and renders memory-isolated charts via `mplfinance` subprocesses.
+- **Purpose**: Classical indicators, multi-timeframe candlestick calculations, multi-extrema RSI divergence detection with swing validation, prospective setup monitoring, Multi-Timeframe (MTF) 1D + 1W trend alignment, and visual snapshot charts with Volume Profile overlays.
+- **Engine**: Computes RSI(14) with boundary-crossing triggers, EMA 21/50/100/200, crossover alerts, and potential curling setups via unified `_shared/indicators/`; evaluates 1D vs. 1W EMA alignment; leverages 100% NumPy-native extrema (`extrema.py`) and renders memory-isolated charts via `mplfinance` subprocesses.
 
 ### 3.3. `finance/fundamental/` — Valuation & Balance Sheet Analysis
 - **Documentation**: Dedicated guide in [modules/finance/fundamental/README_finance_fundamental.md](modules/finance/fundamental/README_finance_fundamental.md) and overview in [modules/finance/README_finance.md#4-fundamental-analysis-module](modules/finance/README_finance.md#4-fundamental-analysis-module)
-- **Purpose**: Fundamental metrics ingestion, peer valuation, and automated LLM-driven financial analysis.
-- **Engine**: Fetches P/E, PEG, EV/EBITDA, Debt/Equity, Free Cash Flow, Profit Margins; generates structured investment notes.
+- **Purpose**: Fundamental metrics ingestion, trailing 4-quarter margin compression detection, peer valuation, multi-strategy value screening (Graham, Lynch GARP, Buffett Quality), and automated LLM-driven financial analysis.
+- **Engine**: Fetches P/E, PEG, EV/EBITDA, Debt/Equity, Free Cash Flow, Profit Margins; flags consecutive quarterly margin compression; generates structured investment notes.
 
 ### 3.4. `finance/trader/` — Institutional SMC Scanner & OMS
 - **Documentation**: Dedicated deep-dive & roadmap in [modules/finance/trader/README_finance_trader.md](modules/finance/trader/README_finance_trader.md)
 - **Purpose**: Institutional Smart Money Concepts (BOS, CHoCH, Order Blocks, FVGs, Liquidity Sweeps, Fixed-Range Volume Profile) coupled with an automated Order Management System (OMS).
 - **Sub-architecture**:
-  - `data.py`: Category data routing (`BinanceProvider` for 4H/1H crypto, `YFinanceProvider` for equities).
-  - `indicators/`: Parametric indicator engine (`ema_N`, `sma_N`, `rsi_N`, `atr_N`).
+  - `data.py`: Category data routing (`BinanceProvider` for 4H/1H crypto, `YFinanceProvider` for equities) with shared cross-submodule OHLCV caching.
+  - `indicators/`: Parametric indicator engine delegating to `_shared/indicators/`.
   - `bias.py`: Higher Timeframe directional regime & hidden divergence detectors.
   - `strategies/`: Auto-discovered strategy plugins inheriting from `BaseStrategy`.
-  - `oms/`: Order execution, paper broker, dynamic risk sizing, and automated TP/SL triggers.
+  - `oms/`: Order execution, paper broker persisting settled cash in SQLite `account_balances` table, dynamic risk sizing with Portfolio Circuit Breaker (Kill Switch on >3% 24h drawdown / 3 stops, `/resume` manual override), and Partial TP1 (50% scale-out with breakeven stop adjustment).
 
 ---
 

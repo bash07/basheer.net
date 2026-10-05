@@ -89,7 +89,10 @@ class ExecutionEngine:
         open_positions = db.execute(
             select(Position).where(Position.status == "OPEN")
         ).scalars().all()
-        account_info = self.broker.get_account_info(open_positions)
+        try:
+            account_info = self.broker.get_account_info(open_positions, db=db)
+        except TypeError:
+            account_info = self.broker.get_account_info(open_positions)
         equity = account_info.equity
 
         if equity <= 0:
@@ -152,6 +155,10 @@ class ExecutionEngine:
         db.flush()
 
         # 8. Persist Position record
+        # Derive TP2 (1.5x of TP1 distance or from setup if present)
+        tp1_dist = abs(signal.tp1 - broker_order.filled_price)
+        tp2_val = round(signal.tp1 + (tp1_dist * 0.5 if signal.direction == "long" else -tp1_dist * 0.5), 4)
+
         position = Position(
             signal_id=signal.id,
             ticker=signal.ticker,
@@ -159,6 +166,8 @@ class ExecutionEngine:
             entry_price=broker_order.filled_price,
             stop_loss=signal.stop_loss,
             take_profit=signal.tp1,
+            tp2=tp2_val,
+            tp1_hit=False,
             qty=qty,
             status="OPEN",
             broker=self.broker.name,
@@ -285,7 +294,10 @@ class ExecutionEngine:
 
         # Update paper balance if broker supports record_trade_pnl
         if hasattr(self.broker, "record_trade_pnl"):
-            self.broker.record_trade_pnl(pnl)
+            try:
+                self.broker.record_trade_pnl(pnl, db=db)
+            except TypeError:
+                self.broker.record_trade_pnl(pnl)
 
         # Update position
         position.status = "CLOSED"
@@ -405,6 +417,36 @@ class ExecutionEngine:
                         sl_hit = True
 
                     if tp_hit:
+                        # Check if this is TP1 hit (scale out 50% & move SL to breakeven)
+                        if not pos.tp1_hit and pos.tp2:
+                            # 1. Partial close 50%
+                            close_qty = round((pos.qty or 1.0) * 0.5, 4)
+                            rem_qty = round((pos.qty or 1.0) - close_qty, 4)
+                            pnl_partial = (pos.take_profit - pos.entry_price) * close_qty * (1.0 if pos.direction == "long" else -1.0)
+
+                            if hasattr(self.broker, "record_trade_pnl"):
+                                try:
+                                    self.broker.record_trade_pnl(pnl_partial, db=db)
+                                except TypeError:
+                                    self.broker.record_trade_pnl(pnl_partial)
+
+                            pos.tp1_hit = True
+                            pos.qty = rem_qty
+                            # Move SL to entry_price (Risk-Free Breakeven)
+                            old_sl = pos.stop_loss
+                            pos.stop_loss = pos.entry_price
+                            # Next target is TP2
+                            pos.take_profit = pos.tp2
+                            pos.notes = f"{pos.notes or ''} | TP1 hit @ {pos.entry_price:,.4f}: scaled 50%, SL moved from {old_sl:,.4f} to breakeven {pos.entry_price:,.4f}"
+                            logger.info(
+                                "[oms.engine] Position #%d TP1 hit! Scaled out 50%%, SL moved to breakeven (%.4f)",
+                                pos.id, pos.entry_price,
+                            )
+                            db.flush()
+                            # Continue monitoring remainder of position
+                            continue
+
+                        # Full close on final TP (or TP2)
                         trade, _ = self.close_position(
                             position_id=pos.id,
                             reason="TP_HIT",
@@ -445,7 +487,10 @@ class ExecutionEngine:
     def get_account_summary(self, db) -> dict:
         """Calculate complete account summary metrics."""
         open_pos = self.get_open_positions(db)
-        account_info = self.broker.get_account_info(open_pos)
+        try:
+            account_info = self.broker.get_account_info(open_pos, db=db)
+        except TypeError:
+            account_info = self.broker.get_account_info(open_pos)
 
         trades = db.execute(select(Trade)).scalars().all()
         wins = sum(1 for t in trades if t.outcome == "WIN")

@@ -629,3 +629,17 @@ async def performance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
+
+# ── /resume ───────────────────────────────────────────────────────────────────
+
+async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/resume — Reset the OMS Circuit Breaker kill switch."""
+    from .oms import resume_trading
+    resume_trading()
+    await update.message.reply_text(
+        "🟢 *OMS Circuit Breaker Reset*\n"
+        "Automated trade approvals and OMS orders have been resumed.",
+        parse_mode="Markdown",
+    )
+
+

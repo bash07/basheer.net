@@ -71,6 +71,7 @@ python main.py
 | `/performance` | `/performance` | Analytics breakdown: executed trades vs. raw theoretical scanner stats. |
 | `/traderbias <ticker>`| `/traderbias NVDA` | Higher Timeframe bias analysis (Regime, Hidden Divergence, Cardwell zones). |
 | `/confluence <ticker>`| `/confluence AAPL` | Fixed-Range Volume Profile (POC/VAH/VAL) + key structural S/R levels. |
+| `/resume` | `/resume` | Resets the Portfolio Circuit Breaker (Kill Switch) after an automated halt. |
 
 ### 2.2. Watchlist & Price Tracking (`finance/watchlist`)
 | Command | Example | Description |
@@ -80,19 +81,20 @@ python main.py
 | `/watchlist [category]`| `/watchlist crypto` | Lists all tracked tickers, optionally filtered by category. |
 | `/price <ticker>` | `/price NVDA` | Detailed price card with 24h change, day range, and 52-week high/low. |
 | `/prices [category]` | `/prices indian_stock` | Compact multi-ticker price overview with color-coded 24h performance. |
-| `/alert <ticker> > <price>` | `/alert BTC-USD > 95000` | Sets a price threshold alert (`>` or `<`). |
+| `/alert <ticker> > <price>` | `/alert BTC-USD > 95000` | Sets a static price threshold alert (`>` or `<`). |
+| `/alert <ticker> trail -<pct>%` | `/alert AAPL trail -5%` | Sets a trailing price alert tracking peak price and firing on pullback. |
 | `/alerts` | `/alerts` | Lists all active, untriggered price alerts. |
 | `/delalert <id>` | `/delalert 2` | Deletes an active price alert by ID. |
 
 ### 2.3. Technical & Fundamental Analysis (`finance/technical` & `fundamental`)
 | Command | Example | Description |
 |---|---|---|
-| `/ta <ticker> [--tf tf]` | `/ta ^NSEI --tf 1d` | Full TA: candlestick chart image + summary (EMAs, RSI divergence, potential curling setups, trend). |
+| `/ta <ticker> [--tf tf]` | `/ta ^NSEI --tf 1d` | Full TA: candlestick chart image + summary (EMAs, Volume Profile, RSI divergence, MTF alignment, trend). |
 | `/rsi <ticker>` | `/rsi AAPL` | Quick text-only RSI(14) indicator check. |
-| `/chart <ticker> [--tf tf]` | `/chart ETH-USD` | Annotated candlestick chart image only. Supported timeframes: `1d`, `1wk`, `1mo`. |
+| `/chart <ticker> [--tf tf]` | `/chart ETH-USD` | Annotated candlestick chart with Volume Profile overlay (POC/VAH/VAL). |
 | `/signals` | `/signals` | Lists recent technical alerts logged in `SignalLog`. |
-| `/fundamental <ticker> [--method m]` | `/fundamental MSFT --method graham` | Full fundamental valuation screen + LLM-synthesized quantitative analyst verdict. |
-| `/screen [--method m]` | `/screen` | Screens all watchlist stock tickers against value criteria, ranked by score. |
+| `/fundamental <ticker> [--method m]` | `/fundamental MSFT --method lynch` | Full fundamental screen (`graham`, `lynch`, `buffett`) + 4Q margin check + LLM analyst verdict. |
+| `/screen [--method m]` | `/screen lynch` | Screens all watchlist stocks against selected valuation strategy (`graham`, `lynch`, `buffett`). |
 | `/earnings [days]` | `/earnings 14` | Lists watched stock tickers reporting earnings within N days (default: 7). |
 
 ### 2.4. Core Controls, Blog & Uptime (`core`, `blog`, `monitor`)
