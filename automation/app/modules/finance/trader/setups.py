@@ -451,29 +451,38 @@ def _check_ema_pullback(
     from .confluence import score_zone
     from .schemas import TradeSetup, ConfluenceReport
 
-    # Accept all non-neutral biases — wider gate than Setup 1
+    # Accept non-neutral bias with matching HTF Hidden Divergence (Edge Case 3)
     if bias.bias == "neutral":
         return None
 
     direction = "long" if "bull" in bias.bias else "short"
+    if direction == "long" and bias.hidden_div != "bullish" and bias.bias != "strong_bull":
+        return None
+    if direction == "short" and bias.hidden_div != "bearish" and bias.bias != "strong_bear":
+        return None
 
     if len(df_ltf) < 30:
         return None
 
-    # ── EMA pullback / cross trigger ────────────────────────────────────────
-    if not _ema_pullback_triggered(df_ltf, direction):
-        logger.debug("[trader.setups] %s EMA Pullback: no trigger on last bar", ticker)
-        return None
-
-    # EMA values for entry zone construction
     close      = df_ltf["Close"]
     ema21_val  = float(close.ewm(span=21, adjust=False).mean().iloc[-1])
     atr        = _get_atr(df_ltf)
+
+    # Overextension check (Edge Case 5)
+    if abs(current_price - ema21_val) > atr * 2.5:
+        logger.debug("[trader.setups] %s EMA Pullback: price overextended from EMA21", ticker)
+        return None
+
+    # ── EMA pullback / cross trigger with depth & wick guards (Edge Case 2) ──
+    if not _ema_pullback_triggered(df_ltf, direction, atr=atr):
+        logger.debug("[trader.setups] %s EMA Pullback: no trigger on last bar", ticker)
+        return None
 
     # Entry zone: between current close and the 21 EMA touch level
     entry_low  = min(current_price, ema21_val)
     entry_high = max(current_price, ema21_val)
     entry_mid  = (entry_low + entry_high) / 2
+
 
     # ── Stop Loss: previous structural swing ─────────────────────────────────
     if direction == "long":
@@ -613,22 +622,28 @@ def _ema_pullback_triggered(
     direction: str,
     ema8=None,
     ema21=None,
+    ema50=None,
+    atr: float | None = None,
 ) -> bool:
-    """Return True if the last bar shows an EMA pullback entry signal.
+    """Return True if the last bar shows an EMA pullback entry signal with edge-case guards.
 
-    LONG triggers (either is sufficient):
-      1. Rejection wick:  bar LOW ≤ 21 EMA  AND  bar CLOSE > 21 EMA
-      2. Bullish cross:   8 EMA crossed above 21 EMA in the last 5 bars
+    LONG triggers:
+      1. Rejection wick:
+         - Bar LOW <= 21 EMA AND bar CLOSE > 21 EMA.
+         - Depth guard: bar LOW must not breach EMA21 by > 1.5 * ATR (prevents falling knives).
+         - Structural floor: bar CLOSE must remain >= EMA50.
+         - Wick quality: CLOSE finishes in the upper 40%+ of the bar range.
+      2. Bullish cross:
+         - 8 EMA crossed above 21 EMA in the last 5 bars AND CLOSE > 21 EMA.
 
-    SHORT triggers (either is sufficient):
-      1. Rejection wick:  bar HIGH ≥ 21 EMA  AND  bar CLOSE < 21 EMA
-      2. Bearish cross:   8 EMA crossed below 21 EMA in the last 5 bars
-
-    Args:
-        df_ltf:    LTF OHLCV DataFrame.
-        direction: ``"long"`` or ``"short"``.
-        ema8:      Optional pre-computed EMA-8 pd.Series (avoids re-computation).
-        ema21:     Optional pre-computed EMA-21 pd.Series (avoids re-computation).
+    SHORT triggers:
+      1. Rejection wick:
+         - Bar HIGH >= 21 EMA AND bar CLOSE < 21 EMA.
+         - Depth guard: bar HIGH must not exceed EMA21 by > 1.5 * ATR.
+         - Structural ceiling: bar CLOSE must remain <= EMA50.
+         - Wick quality: CLOSE finishes in the lower 40%+ of the bar range.
+      2. Bearish cross:
+         - 8 EMA crossed below 21 EMA in the last 5 bars AND CLOSE < 21 EMA.
     """
     close = df_ltf["Close"]
     high  = df_ltf["High"]
@@ -636,31 +651,58 @@ def _ema_pullback_triggered(
     # Use pre-computed series if provided, otherwise compute fresh
     ema8  = ema8  if ema8  is not None else close.ewm(span=8,  adjust=False).mean()
     ema21 = ema21 if ema21 is not None else close.ewm(span=21, adjust=False).mean()
+    if ema50 is None and len(df_ltf) >= 50:
+        ema50 = close.ewm(span=50, adjust=False).mean()
 
     e21        = float(ema21.iloc[-1])
     last_close = float(close.iloc[-1])
     last_high  = float(high.iloc[-1])
     last_low   = float(low.iloc[-1])
+    bar_range  = max(last_high - last_low, 1e-8)
+    e50        = float(ema50.iloc[-1]) if ema50 is not None and len(ema50) else None
 
     # Scan last 5 bars for EMA cross (index: -5 to -1)
     n = min(5, len(df_ltf) - 1)
 
     if direction == "long":
-        rejection = (last_low <= e21) and (last_close > e21)
+        # Guard: Deep pierce check (Edge Case 2)
+        if atr is not None and (e21 - last_low) > (atr * 1.5):
+            return False
+        # Guard: EMA50 structural floor
+        if e50 is not None and last_close < e50:
+            return False
+
+        # Wick quality: close in upper 40% of bar range
+        wick_rejection = (last_close - last_low) >= (bar_range * 0.4)
+        rejection = (last_low <= e21) and (last_close > e21) and wick_rejection
+
         cross = any(
             float(ema8.iloc[-i]) > float(ema21.iloc[-i])
             and float(ema8.iloc[-i - 1]) <= float(ema21.iloc[-i - 1])
             for i in range(1, n + 1)
-        )
+        ) and (last_close > e21)
+
         return rejection or cross
     else:
-        rejection = (last_high >= e21) and (last_close < e21)
+        # Guard: Deep pierce check (Edge Case 2)
+        if atr is not None and (last_high - e21) > (atr * 1.5):
+            return False
+        # Guard: EMA50 structural ceiling
+        if e50 is not None and last_close > e50:
+            return False
+
+        # Wick quality: close in lower 40% of bar range
+        wick_rejection = (last_high - last_close) >= (bar_range * 0.4)
+        rejection = (last_high >= e21) and (last_close < e21) and wick_rejection
+
         cross = any(
             float(ema8.iloc[-i]) < float(ema21.iloc[-i])
             and float(ema8.iloc[-i - 1]) >= float(ema21.iloc[-i - 1])
             for i in range(1, n + 1)
-        )
+        ) and (last_close < e21)
+
         return rejection or cross
+
 
 
 def _prev_swing_low_price(structure, current_price: float) -> Optional[float]:

@@ -411,3 +411,127 @@ class TestTACommands:
         assert "BTC-USD" in text
         assert "Bullish crossover" in text
 
+
+class TestPerformanceCommand:
+    """Tests for /performance trader analytics command."""
+
+    async def test_performance_empty(self, make_update, clean_db):
+        update, context = make_update(args=[])
+        from modules.finance.trader.commands import performance_command
+        await performance_command(update, context)
+
+        update.message.reply_text.assert_called_once()
+        text = update.message.reply_text.call_args[0][0]
+        assert "No trading records found yet" in text
+
+    async def test_performance_with_trades_and_signals(self, make_update, clean_db):
+        from modules.finance.trader.models import Trade, TradeSignal
+
+        now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        clean_db.add_all([
+            Trade(
+                ticker="AAPL",
+                setup_name="OB Retracement",
+                direction="long",
+                entry_price=150.0,
+                exit_price=165.0,
+                qty=10.0,
+                outcome="WIN",
+                realised_rr=2.0,
+                realised_pnl=150.0,
+                opened_at=now,
+            ),
+            Trade(
+                ticker="TSLA",
+                setup_name="OB Retracement",
+                direction="short",
+                entry_price=200.0,
+                exit_price=210.0,
+                qty=5.0,
+                outcome="LOSS",
+                realised_rr=-1.0,
+                realised_pnl=-50.0,
+                opened_at=now,
+            ),
+            Trade(
+                ticker="MSFT",
+                setup_name="Breakout",
+                direction="long",
+                entry_price=300.0,
+                exit_price=300.5,
+                qty=2.0,
+                outcome="BREAKEVEN",
+                realised_rr=0.1,
+                realised_pnl=1.0,
+                opened_at=now,
+            ),
+            TradeSignal(
+                ticker="AAPL",
+                category="us_stock",
+                mode="swing",
+                setup_name="OB Retracement",
+                direction="long",
+                setup_type="continuation",
+                bias="strong_bull",
+                conf_score=8.5,
+                conf_label="high",
+                entry_mid=150.0,
+                stop_loss=145.0,
+                tp1=160.0,
+                rr_ratio=2.0,
+                setup_json="{}",
+                outcome="WIN",
+                realised_rr=2.0,
+            ),
+            TradeSignal(
+                ticker="TSLA",
+                category="us_stock",
+                mode="swing",
+                setup_name="OB Retracement",
+                direction="short",
+                setup_type="continuation",
+                bias="strong_bear",
+                conf_score=7.0,
+                conf_label="medium",
+                entry_mid=200.0,
+                stop_loss=210.0,
+                tp1=180.0,
+                rr_ratio=2.0,
+                setup_json="{}",
+                outcome="LOSS",
+                realised_rr=-1.0,
+            ),
+            TradeSignal(
+                ticker="NVDA",
+                category="us_stock",
+                mode="swing",
+                setup_name="EMA Pullback + Hidden Div",
+                direction="long",
+                setup_type="continuation",
+                bias="strong_bull",
+                conf_score=9.0,
+                conf_label="high",
+                entry_mid=400.0,
+                stop_loss=390.0,
+                tp1=420.0,
+                rr_ratio=2.0,
+                setup_json="{}",
+                outcome="OPEN",
+            ),
+        ])
+        clean_db.commit()
+
+        update, context = make_update(args=[])
+        from modules.finance.trader.commands import performance_command
+        await performance_command(update, context)
+
+        update.message.reply_text.assert_called_once()
+        text = update.message.reply_text.call_args[0][0]
+        assert "Trading Performance Analytics" in text
+        assert "Executed Trades (OMS):" in text
+        assert "Signal Scanner Stats (Raw Signals):" in text
+        assert "OB Retracement" in text
+        assert "EMA Pullback + Hidden Di" in text
+        assert "Total Closed: `3` (1W / 1L / 1BE)" in text
+
+

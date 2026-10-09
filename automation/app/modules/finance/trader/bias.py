@@ -34,6 +34,9 @@ _REGIME_WINDOW     = 8    # bars: RSI must be on one side of 50 for this many ba
 _REGIME_THRESHOLD  = 50.0
 _HD_ORDER          = 5    # argrelextrema half-width (bars) for swing detection
 _HD_LOOKBACK       = 60   # bars scanned for hidden divergence pivots
+_HD_MIN_SWING_DISTANCE = 5   # min bars between swing pivots (avoids micro-noise)
+_HD_MAX_SWING_DISTANCE = 35  # max bars between swing pivots (avoids disconnected swings)
+_HD_MAX_SWING_AGE      = 18  # recent pivot must be within last N bars (freshness)
 
 
 # ── BiasProvider Interface ─────────────────────────────────────────────────────
@@ -190,32 +193,47 @@ def _hidden_divergence(close, rsi_series) -> str:
     # RSI:   Lower Low  (i2 trough < i1 trough)
     trough_idx = argrelextrema(price, np.less, order=ord_)[0]
     if len(trough_idx) >= 2:
-        i1, i2 = int(trough_idx[-2]), int(trough_idx[-1])
-        price_higher_low = price[i2] > price[i1]   # HL in price
-        rsi_lower_low    = rsi[i2]   < rsi[i1]     # LL in RSI
-        if price_higher_low and rsi_lower_low:
-            logger.debug(
-                "[trader.bias] Bullish Hidden Div: price trough %.4f→%.4f, RSI %.1f→%.1f",
-                price[i1], price[i2], rsi[i1], rsi[i2],
-            )
-            return "bullish"
+        for idx in range(len(trough_idx) - 1, 0, -1):
+            i2 = int(trough_idx[idx])
+            i1 = int(trough_idx[idx - 1])
+            age = (len(price) - 1) - i2
+            dist = i2 - i1
+            if age <= _HD_MAX_SWING_AGE and _HD_MIN_SWING_DISTANCE <= dist <= _HD_MAX_SWING_DISTANCE:
+                price_higher_low = price[i2] > price[i1]   # HL in price
+                rsi_lower_low    = rsi[i2]   < rsi[i1]     # LL in RSI
+                if price_higher_low and rsi_lower_low:
+                    logger.debug(
+                        "[trader.bias] Bullish Hidden Div: price trough %.4f→%.4f, RSI %.1f→%.1f (dist=%d, age=%d)",
+                        price[i1], price[i2], rsi[i1], rsi[i2], dist, age,
+                    )
+                    return "bullish"
+            # Only consider the most recent eligible swing pivot
+            break
 
     # ── Bearish Hidden Divergence: peaks ─────────────────────────────────────
     # Price: Lower High  (i2 peak < i1 peak)
     # RSI:   Higher High (i2 peak > i1 peak)
     peak_idx = argrelextrema(price, np.greater, order=ord_)[0]
     if len(peak_idx) >= 2:
-        i1, i2 = int(peak_idx[-2]), int(peak_idx[-1])
-        price_lower_high  = price[i2] < price[i1]  # LH in price
-        rsi_higher_high   = rsi[i2]   > rsi[i1]    # HH in RSI
-        if price_lower_high and rsi_higher_high:
-            logger.debug(
-                "[trader.bias] Bearish Hidden Div: price peak %.4f→%.4f, RSI %.1f→%.1f",
-                price[i1], price[i2], rsi[i1], rsi[i2],
-            )
-            return "bearish"
+        for idx in range(len(peak_idx) - 1, 0, -1):
+            i2 = int(peak_idx[idx])
+            i1 = int(peak_idx[idx - 1])
+            age = (len(price) - 1) - i2
+            dist = i2 - i1
+            if age <= _HD_MAX_SWING_AGE and _HD_MIN_SWING_DISTANCE <= dist <= _HD_MAX_SWING_DISTANCE:
+                price_lower_high  = price[i2] < price[i1]  # LH in price
+                rsi_higher_high   = rsi[i2]   > rsi[i1]    # HH in RSI
+                if price_lower_high and rsi_higher_high:
+                    logger.debug(
+                        "[trader.bias] Bearish Hidden Div: price peak %.4f→%.4f, RSI %.1f→%.1f (dist=%d, age=%d)",
+                        price[i1], price[i2], rsi[i1], rsi[i2], dist, age,
+                    )
+                    return "bearish"
+            # Only consider the most recent eligible swing pivot
+            break
 
     return "none"
+
 
 
 # ── Step 3 — RSI Failure Swing (v1.1) ────────────────────────────────────────

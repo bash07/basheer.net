@@ -569,65 +569,82 @@ async def performance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     from core.db import get_db
     from .models import Trade, TradeSignal
 
-    with get_db() as db:
-        trades = db.execute(select(Trade)).scalars().all()
-        signals = db.execute(select(TradeSignal)).scalars().all()
+    try:
+        with get_db() as db:
+            trades = db.execute(select(Trade)).scalars().all()
+            signals = db.execute(select(TradeSignal)).scalars().all()
 
-    if not trades and not signals:
-        await update.message.reply_text("📭 No trading records found yet.", parse_mode="Markdown")
-        return
+        if not trades and not signals:
+            await update.message.reply_text("📭 No trading records found yet.", parse_mode="Markdown")
+            return
 
-    lines = ["📊 *Trading Performance Analytics*\n"]
+        lines = ["📊 *Trading Performance Analytics*\n"]
 
-    # 1. Executed Trades (OMS Ledger)
-    if trades:
-        wins = sum(1 for t in trades if t.outcome == "WIN")
-        losses = sum(1 for t in trades if t.outcome == "LOSS")
-        total = wins + losses
-        wr = (wins / total * 100) if total > 0 else 0.0
-        pnl = sum((t.realised_pnl or 0.0) for t in trades)
-        rr_sum = sum(t.realised_rr for t in trades if t.outcome == "WIN")
-        avg_rr = (rr_sum / wins) if wins > 0 else 0.0
+        # 1. Executed Trades (OMS Ledger)
+        if trades:
+            wins = sum(1 for t in trades if t.outcome == "WIN")
+            losses = sum(1 for t in trades if t.outcome == "LOSS")
+            be = sum(1 for t in trades if t.outcome == "BREAKEVEN")
+            total = wins + losses
+            wr = (wins / total * 100) if total > 0 else 0.0
+            pnl = sum((t.realised_pnl or 0.0) for t in trades)
+            rr_sum = sum((t.realised_rr or 0.0) for t in trades if t.outcome == "WIN")
+            avg_rr = (rr_sum / wins) if wins > 0 else 0.0
 
-        lines.append("*Executed Trades (OMS):*")
-        lines.append(
-            f"  • Total Closed: `{len(trades)}` ({wins}W / {losses}L)\n"
-            f"  • Win Rate:     `{wr:.1f}%`\n"
-            f"  • Avg Win RR:   `{avg_rr:.2f}×`\n"
-            f"  • Realised P&L: `${pnl:+,.2f}`\n"
-        )
-    else:
-        lines.append("*Executed Trades (OMS):* _None closed yet_\n")
-
-    # 2. Algorithmic Signals Breakdown
-    if signals:
-        stats: dict[str, dict] = {}
-        for r in signals:
-            sn = r.setup_name
-            if sn not in stats:
-                stats[sn] = {"W": 0, "L": 0, "OPEN": 0, "RR_sum": 0.0}
-
-            stats[sn][r.outcome] += 1
-            if r.outcome == "WIN" and r.realised_rr is not None:
-                stats[sn]["RR_sum"] += r.realised_rr
-
-        lines.append("*Signal Scanner Stats (Raw Signals):*")
-        lines.append("```text")
-        lines.append(f"{'Setup Name':<25} {'W':<3} {'L':<3} {'OPN':<4} {'WR%':<5} {'AvgRR':<5}")
-        lines.append("-" * 52)
-
-        for sn, s in stats.items():
-            w, l, o = s["W"], s["L"], s["OPEN"]
-            total_closed = w + l
-            swr = (w / total_closed * 100) if total_closed > 0 else 0.0
-            s_avg_rr = (s["RR_sum"] / w) if w > 0 else 0.0
-            name_short = sn[:24]
+            be_str = f" / {be}BE" if be > 0 else ""
+            lines.append("*Executed Trades (OMS):*")
             lines.append(
-                f"{name_short:<25} {w:<3} {l:<3} {o:<4} {swr:>4.0f}% {s_avg_rr:>4.1f}x"
+                f"  • Total Closed: `{len(trades)}` ({wins}W / {losses}L{be_str})\n"
+                f"  • Win Rate:     `{wr:.1f}%`\n"
+                f"  • Avg Win RR:   `{avg_rr:.2f}×`\n"
+                f"  • Realised P&L: `${pnl:+,.2f}`\n"
             )
-        lines.append("```")
+        else:
+            lines.append("*Executed Trades (OMS):* _None closed yet_\n")
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        # 2. Algorithmic Signals Breakdown
+        if signals:
+            stats: dict[str, dict] = {}
+            for r in signals:
+                sn = r.setup_name or "Unknown"
+                if sn not in stats:
+                    stats[sn] = {"W": 0, "L": 0, "OPEN": 0, "BE": 0, "RR_sum": 0.0}
+
+                outcome = (r.outcome or "OPEN").upper()
+                if outcome in ("WIN", "W"):
+                    stats[sn]["W"] += 1
+                    if r.realised_rr is not None:
+                        stats[sn]["RR_sum"] += r.realised_rr
+                elif outcome in ("LOSS", "L"):
+                    stats[sn]["L"] += 1
+                elif outcome in ("BREAKEVEN", "BE"):
+                    stats[sn]["BE"] += 1
+                else:
+                    stats[sn]["OPEN"] += 1
+
+            lines.append("*Signal Scanner Stats (Raw Signals):*")
+            lines.append("```text")
+            lines.append(f"{'Setup Name':<25} {'W':<3} {'L':<3} {'OPN':<4} {'WR%':<5} {'AvgRR':<5}")
+            lines.append("-" * 52)
+
+            for sn, s in stats.items():
+                w, l, o = s["W"], s["L"], s["OPEN"]
+                total_closed = w + l
+                swr = (w / total_closed * 100) if total_closed > 0 else 0.0
+                s_avg_rr = (s["RR_sum"] / w) if w > 0 else 0.0
+                name_short = sn[:24]
+                lines.append(
+                    f"{name_short:<25} {w:<3} {l:<3} {o:<4} {swr:>4.0f}% {s_avg_rr:>4.1f}x"
+                )
+            lines.append("```")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        logger.error("[trader] /performance error: %s", e, exc_info=True)
+        await update.message.reply_text(
+            f"❌ Failed to fetch performance stats: {_safe_md(str(e))}",
+            parse_mode="Markdown",
+        )
 
 
 # ── /resume ───────────────────────────────────────────────────────────────────

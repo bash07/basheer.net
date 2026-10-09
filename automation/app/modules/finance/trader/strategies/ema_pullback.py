@@ -29,7 +29,7 @@ class EMAPullbackStrategy(BaseStrategy):
     setup_type = "continuation"
     priority = 40
     required_indicators = [
-        "bias", "structure", "ema_8", "ema_21",
+        "bias", "structure", "ema_8", "ema_21", "ema_50", "adx",
         "atr_14", "volume_profile", "sr_levels",
     ]
 
@@ -51,12 +51,49 @@ class EMAPullbackStrategy(BaseStrategy):
 
         direction = "long" if "bull" in bias.bias else "short"
 
-        # Pass pre-computed EMA series — avoids recomputing inside the helper
-        if not _ema_pullback_triggered(ctx.df_ltf, direction, ema8=ctx.ema_8, ema21=ctx.ema_21):
+        # ── Edge Case 3: Enforce HTF Hidden Divergence continuation signal ──
+        if direction == "long" and bias.hidden_div != "bullish" and bias.bias != "strong_bull":
+            logger.debug("[trader.strategy] %s: Long rejected — HTF bullish hidden divergence not confirmed", ctx.ticker)
+            return None
+        if direction == "short" and bias.hidden_div != "bearish" and bias.bias != "strong_bear":
+            logger.debug("[trader.strategy] %s: Short rejected — HTF bearish hidden divergence not confirmed", ctx.ticker)
             return None
 
-        ema21_val = float(ctx.ema_21.iloc[-1])   # use registry-computed series
-        atr       = ctx.atr_14
+        # ── Edge Case 1: Choppy / Flat Market Filters (ADX & EMA Slope / Fan) ──
+        adx_val = ctx.adx
+        if adx_val is not None and adx_val < 20.0:
+            logger.debug("[trader.strategy] %s: Rejected — ADX %.1f < 20.0 indicates choppy / ranging regime", ctx.ticker, adx_val)
+            return None
+
+        ema21 = ctx.ema_21
+        ema50 = ctx.ema_50
+        if ema21 is not None and ema50 is not None and len(ema21) >= 3 and len(ema50) >= 3:
+            e21_last = float(ema21.iloc[-1])
+            e21_prev = float(ema21.iloc[-3])
+            e50_last = float(ema50.iloc[-1])
+            if direction == "long":
+                if e21_last < e50_last or e21_last < e21_prev:
+                    logger.debug("[trader.strategy] %s: Long rejected — EMA 21 < EMA 50 or EMA 21 not sloping upwards", ctx.ticker)
+                    return None
+            else:
+                if e21_last > e50_last or e21_last > e21_prev:
+                    logger.debug("[trader.strategy] %s: Short rejected — EMA 21 > EMA 50 or EMA 21 not sloping downwards", ctx.ticker)
+                    return None
+
+        ema21_val = float(ctx.ema_21.iloc[-1])
+        atr       = ctx.atr_14 or 1.0
+
+        # ── Edge Case 5: Overextension / Parabolic Blowout Filter ───────────
+        if abs(ctx.current_price - ema21_val) > atr * 2.5:
+            logger.debug("[trader.strategy] %s: Rejected — price overextended from EMA 21 (> 2.5 ATR)", ctx.ticker)
+            return None
+
+        # ── Edge Case 2: Deep Piercing & Wick Quality in Rejection Trigger ─
+        if not _ema_pullback_triggered(
+            ctx.df_ltf, direction,
+            ema8=ctx.ema_8, ema21=ctx.ema_21, ema50=ctx.ema_50, atr=atr,
+        ):
+            return None
 
         entry_low  = min(ctx.current_price, ema21_val)
         entry_high = max(ctx.current_price, ema21_val)

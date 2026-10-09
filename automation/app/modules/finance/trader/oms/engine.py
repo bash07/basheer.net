@@ -498,7 +498,7 @@ class ExecutionEngine:
         total_closed = wins + losses
         win_rate = (wins / total_closed * 100) if total_closed > 0 else 0.0
 
-        rr_sum = sum(t.realised_rr for t in trades if t.outcome == "WIN")
+        rr_sum = sum((t.realised_rr or 0.0) for t in trades if t.outcome == "WIN")
         avg_rr = (rr_sum / wins) if wins > 0 else 0.0
         total_pnl = sum((t.realised_pnl or 0.0) for t in trades)
 
