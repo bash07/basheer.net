@@ -43,8 +43,57 @@ def scan_mode_for(category: str) -> str:
 #   TIMEFRAME_CONFIGS["scalp"] = {"htf": "1h", "ltf": "15m", "vp_lookback": 30}
 #
 TIMEFRAME_CONFIGS: dict[str, dict] = {
-    "intraday": {"htf": "1d",  "ltf": "1h",  "vp_lookback": 60},
-    "swing":    {"htf": "1wk", "ltf": "4h",  "vp_lookback": 100},
+    "intraday": {"htf": "1d",  "mtf": "4h",  "ltf": "1h",  "trigger": "1h",  "vp_lookback": 60},
+    "swing":    {"htf": "1wk", "mtf": "4h",  "ltf": "1h",  "trigger": "1h",  "vp_lookback": 100},
+    "scalping": {"htf": "1h",  "mtf": "15m", "ltf": "5m",  "trigger": "5m",  "vp_lookback": 15},
+}
+
+
+@dataclass(frozen=True)
+class TimeframeTriad:
+    """Represents the 3-Tier Multi-Timeframe Triad for a trading style.
+
+    Attributes:
+        style:       "swing" | "intraday" | "scalping"
+        htf:         Where: Trend & Key S/R Zones (e.g. 1wk, 4h, 1h)
+        mtf:         When: Market Structure Shift / Hidden Divergence (e.g. 4h, 15m, 5m)
+        trigger:     How: Execution trigger & tight SL (e.g. 1h, 5m, 1m)
+        vp_lookback: Lookback days for Volume Profile
+    """
+    style: str
+    htf: str
+    mtf: str
+    trigger: str
+    vp_lookback: int
+
+    @property
+    def ltf(self) -> str:
+        """Backward-compatible alias for existing 2-tier callers — maps to trigger."""
+        return self.trigger
+
+
+TIMEFRAME_TRIADS: dict[str, TimeframeTriad] = {
+    "swing": TimeframeTriad(
+        style="swing",
+        htf="1wk",
+        mtf="4h",
+        trigger="1h",
+        vp_lookback=100,
+    ),
+    "intraday": TimeframeTriad(
+        style="intraday",
+        htf="4h",
+        mtf="15m",
+        trigger="5m",
+        vp_lookback=60,
+    ),
+    "scalping": TimeframeTriad(
+        style="scalping",
+        htf="1h",
+        mtf="5m",
+        trigger="1m",
+        vp_lookback=15,
+    ),
 }
 
 
@@ -56,6 +105,21 @@ def timeframes_for(mode: str) -> tuple[str, str, int]:
     """
     cfg = TIMEFRAME_CONFIGS.get(mode, TIMEFRAME_CONFIGS["swing"])
     return cfg["htf"], cfg["ltf"], cfg["vp_lookback"]
+
+
+def timeframe_triad_for(mode: str) -> TimeframeTriad:
+    """Return TimeframeTriad (htf, mtf, trigger, vp_lookback) for a given style/mode."""
+    if mode in TIMEFRAME_TRIADS:
+        return TIMEFRAME_TRIADS[mode]
+    cfg = TIMEFRAME_CONFIGS.get(mode, TIMEFRAME_CONFIGS["swing"])
+    return TimeframeTriad(
+        style=mode,
+        htf=cfg.get("htf", "1wk"),
+        mtf=cfg.get("mtf", "4h"),
+        trigger=cfg.get("trigger", cfg.get("ltf", "1h")),
+        vp_lookback=cfg.get("vp_lookback", 100),
+    )
+
 
 
 # ── HTF Bias ──────────────────────────────────────────────────────────────────
@@ -223,6 +287,8 @@ class TradeSetup(BaseModel):
     fired_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     ltf_tf: str = ""
     htf_tf: str = ""
+    mtf_tf: str = ""
+    trigger_tf: str = ""
 
     @property
     def entry_mid(self) -> float:

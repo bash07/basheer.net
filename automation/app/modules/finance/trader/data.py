@@ -595,6 +595,24 @@ def list_providers() -> list[str]:
     return sorted(_PROVIDERS.keys())
 
 
+def fetch_ohlcv_triad(
+    symbol: str,
+    triad,
+    category: Optional[str] = None,
+) -> tuple[Optional[object], Optional[object], Optional[object]]:
+    """Fetch all 3 timeframes (htf, mtf, trigger) for a symbol according to its TimeframeTriad.
+
+    Returns:
+        (df_htf, df_mtf, df_trigger)
+    """
+    provider = get_provider(category)
+    df_htf = provider.fetch_ohlcv(symbol, triad.htf)
+    df_mtf = provider.fetch_ohlcv(symbol, triad.mtf)
+    df_trigger = provider.fetch_ohlcv(symbol, triad.trigger)
+    return df_htf, df_mtf, df_trigger
+
+
+
 # ── Auto-load provider configuration from env & config ────────────────────────
 
 def _load_config_routes() -> None:

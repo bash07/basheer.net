@@ -99,20 +99,50 @@ class MyNewStrategy(BaseStrategy):
     description = "Enters on high-volume structure break"
     setup_type = "continuation" # or "reversal"
     priority = 25
+    supported_styles = ["swing", "intraday", "scalping"]
     required_indicators = ["structure", "volume_profile", "atr_14", "rsi_14"]
     bias_provider = "composite" # "rsi" | "macd" | "ema" | "composite" | "none"
 
     def evaluate(self, ctx: StrategyContext) -> TradeSetup | None:
-        # ctx provides typed, pre-computed access:
-        # ctx.bias, ctx.structure, ctx.current_price, ctx.df_ltf, ctx.df_htf
+        # ctx provides typed access across the 3-tier timeframe triad:
+        # ctx.df_htf      (Where: Trend & Key Zones)
+        # ctx.df_mtf      (When: Market Structure Shift / Hidden Divergence)
+        # ctx.df_trigger  (How: Entry Rejection / Precise Trigger)
         ...
 ```
 
-### 3.2. Indicator Registry (`modules/finance/trader/indicators/`)
+### 3.2. Multi-Timeframe Matrix by Trading Style (The 3-Tier Triad)
+
+Trading strategies operate across a structured 3-tier hierarchy depending on the active trading style:
+
+| Trading Style | Higher Timeframe (HTF)<br>*(Where: Trend & Key Zones)* | Intermediate Timeframe (MTF)<br>*(When: Market Structure Shift)* | Trigger Timeframe (Entry)<br>*(How: Trigger & Tight SL)* | Average Hold Time |
+| :--- | :--- | :--- | :--- | :--- |
+| **Swing Trading** | Weekly / Daily (`1wk` / `1d`) | 4-Hour (`4h`) | 1-Hour / 15-Min (`1h` / `15m`) | Days to Weeks |
+| **Intraday / Day Trading** | 4-Hour / 1-Hour (`4h` / `1h`) | 15-Minute (`15m`) | 5-Minute / 3-Minute (`5m` / `3m`) | Hours |
+| **Scalping** | 1-Hour / 15-Minute (`1h` / `15m`) | 5-Minute (`5m`) | 1-Minute (`1m`) | Seconds to Minutes |
+
+#### The 3-Step Execution Framework
+
+1. **Step 1: The HTF Setup (The "Where")**
+   * **Objective**: Identify where institutional liquidity and key reaction levels reside.
+   * **Action**: Read `df_htf` to establish market bias (Bull/Bear regime) and mark major S/R levels, Higher-Timeframe Order Blocks, or 0.5–0.618 equilibrium Fibonacci zones.
+   * **Rule**: Do not initiate trades unless price interacts with a valid HTF zone.
+
+2. **Step 2: The MTF Confirmation (The "When")**
+   * **Objective**: Verify that the minor counter-trend has exhausted and the dominant HTF trend is resuming.
+   * **Action**: On `df_mtf`, wait for a **Market Structure Shift (MSS)** / **Change of Character (CHoCH)** with aggressive displacement candles, or a confirmed **Hidden Divergence** continuation pivot.
+
+3. **Step 3: The Entry Trigger (The "How")**
+   * **Objective**: Execute with a tight stop loss on the micro structure for high asymmetric Risk-to-Reward (R:R).
+   * **Action**: On `df_trigger`, execute at an exact confirmation trigger (e.g., 50% FVG retest, broken level retest, or EMA rejection wick).
+   * **Stop Loss (SL)**: Placed strictly beyond the invalidation point of the trigger/MTF swing.
+   * **Take Profit (TP)**: Target the opposing major HTF liquidity pool or structural swing high/low.
+
+### 3.3. Indicator Registry (`modules/finance/trader/indicators/`)
 - **Lazy Evaluation & Dependency Graph**: Indicators declare upstream dependencies. For instance, `macd` requests `ema_12` and `ema_26`. The engine topologically sorts dependencies and avoids redundant calculations.
 - **Parametric Resolvers**: Indicators like `ema_9`, `ema_21`, `sma_200`, `rsi_7`, and `atr_20` do not need separate files. They resolve dynamically through regex resolvers registered in `indicators/__init__.py`.
 
-### 3.3. Market Data Providers (`modules/finance/trader/data.py`)
+### 3.4. Market Data Providers (`modules/finance/trader/data.py`)
 - Category-based routing isolates asset nuances:
   - `crypto` -> `BinanceProvider`: Uses native 4H and 1H klines with ISO/UTC normalization.
   - `us_stock`, `forex`, default -> `YFinanceProvider`: Employs in-memory cache to stay well clear of rate limits.
@@ -121,7 +151,8 @@ class MyNewStrategy(BaseStrategy):
   set_provider(MyCustomProvider(), category="crypto")
   ```
 
-### 3.4. Order Management System (`modules/finance/trader/oms/`)
+### 3.5. Order Management System (`modules/finance/trader/oms/`)
+
 - **Broker Interface (`oms/broker.py`)**: Clean ABC defining `submit_order()`, `close_position()`, `get_account_info()`, and `get_current_price()`.
 - **Paper Broker (`oms/paper_broker.py`)**: Maintains settled cash balance, tracks unrealized/realized P&L, and persists state transactionally in SQLite table `account_balances` within `automation.db` (with automatic migration from legacy `paper_account.json`).
 - **Risk Management (`oms/risk.py`)**:

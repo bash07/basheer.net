@@ -198,27 +198,28 @@ def score_zone(
                 seen_labels.add(label_key)
 
     # ── Layer B: Volume Profile ───────────────────────────────────────────────
-    vp_tol = tol * 1.5  # slightly wider tolerance for VP levels
+    if vp is not None:
+        vp_tol = tol * 1.5  # slightly wider tolerance for VP levels
 
-    if abs(vp.poc - zone_mid) <= vp_tol:
-        score += _W_POC
-        vp_hits.append(f"POC @ {_fmt(vp.poc, zone_mid)} (peak volume)")
-    elif abs(vp.vah - zone_mid) <= vp_tol:
-        score += _W_VAH_VAL
-        vp_hits.append(f"VAH @ {_fmt(vp.vah, zone_mid)} (value area top)")
-    elif abs(vp.val - zone_mid) <= vp_tol:
-        score += _W_VAH_VAL
-        vp_hits.append(f"VAL @ {_fmt(vp.val, zone_mid)} (value area bottom)")
+        if abs(vp.poc - zone_mid) <= vp_tol:
+            score += _W_POC
+            vp_hits.append(f"POC @ {_fmt(vp.poc, zone_mid)} (peak volume)")
+        elif abs(vp.vah - zone_mid) <= vp_tol:
+            score += _W_VAH_VAL
+            vp_hits.append(f"VAH @ {_fmt(vp.vah, zone_mid)} (value area top)")
+        elif abs(vp.val - zone_mid) <= vp_tol:
+            score += _W_VAH_VAL
+            vp_hits.append(f"VAL @ {_fmt(vp.val, zone_mid)} (value area bottom)")
 
-    hvn_nearby = [h for h in vp.hvn if zone_low - vp_tol * 2 < h < zone_high + vp_tol * 2]
-    if hvn_nearby:
-        score += _W_HVN
-        vp_hits.append(f"HVN cluster near {_fmt(hvn_nearby[0], zone_mid)}")
+        hvn_nearby = [h for h in vp.hvn if zone_low - vp_tol * 2 < h < zone_high + vp_tol * 2]
+        if hvn_nearby:
+            score += _W_HVN
+            vp_hits.append(f"HVN cluster near {_fmt(hvn_nearby[0], zone_mid)}")
 
-    lvn_inside = [l for l in vp.lvn if zone_low * 0.998 < l < zone_high * 1.002]
-    if lvn_inside:
-        score += _W_LVN
-        vp_hits.append("LVN within zone (fast price move expected)")
+        lvn_inside = [l for l in vp.lvn if zone_low * 0.998 < l < zone_high * 1.002]
+        if lvn_inside:
+            score += _W_LVN
+            vp_hits.append("LVN within zone (fast price move expected)")
 
     score = min(score, 10.0)   # cap at 10
     label = (
@@ -231,9 +232,9 @@ def score_zone(
         score=round(score, 2),
         sr_hits=sr_hits,
         vp_hits=vp_hits,
-        poc=vp.poc,
-        vah=vp.vah,
-        val=vp.val,
+        poc=vp.poc if vp is not None else 0.0,
+        vah=vp.vah if vp is not None else 0.0,
+        val=vp.val if vp is not None else 0.0,
         label=label,
     )
 

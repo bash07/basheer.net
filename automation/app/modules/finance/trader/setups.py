@@ -53,32 +53,30 @@ def check_all(
     category: str,
     df_htf,
     df_ltf,
+    df_mtf=None,
+    df_trigger=None,
+    mode: Optional[str] = None,
 ) -> list:
     """Run all enabled strategies for a ticker and return valid TradeSetup objects.
 
-    Phase 1 implementation — indicator-registry pipeline:
-
-      1. Collect the union of ``required_indicators`` from all enabled strategies.
-      2. Call ``compute_indicators()`` — only the needed indicators are computed
-         (with dependency resolution handled automatically).
-      3. Early-exit if bias is neutral (saves all subsequent computation).
-      4. Build a ``StrategyContext`` backed by the indicators dict.
-      5. Evaluate each enabled strategy against the shared context.
+    Supports both legacy 2-tier (df_htf, df_ltf) and 3-tier (df_htf, df_mtf, df_trigger)
+    multi-timeframe matrix models.
     """
     from .schemas import scan_mode_for
     from .indicators import compute_indicators
     from .strategies import get_all_strategies
     from .strategies.base import StrategyContext
 
-    mode = scan_mode_for(category)
+    mode = mode or scan_mode_for(category)
 
-    # Identify enabled strategies
+    # Identify enabled strategies (respecting disabled list and supported styles)
     enabled = [
         s for s in get_all_strategies()
         if s.name not in DISABLED_SETUPS
+        and (not getattr(s, "supported_styles", None) or mode in s.supported_styles)
     ]
     if not enabled:
-        logger.debug("[trader.setups] %s: all strategies disabled — skipping", ticker)
+        logger.debug("[trader.setups] %s: all strategies disabled or unsuited for style %s — skipping", ticker, mode)
         return []
 
     # Collect the union of all required indicators
@@ -115,14 +113,17 @@ def check_all(
         logger.debug("[trader.setups] %s: all strategy biases are neutral — skipping", ticker)
         return []
 
-    # Build shared context
+    # Build shared context (supporting 3-tier triad)
+    exec_df = df_trigger if df_trigger is not None else df_ltf
     ctx = StrategyContext(
         ticker=ticker,
         category=category,
         mode=mode,
-        current_price=float(df_ltf["Close"].iloc[-1]),
+        current_price=float(exec_df["Close"].iloc[-1]),
         df_htf=df_htf,
         df_ltf=df_ltf,
+        df_mtf=df_mtf,
+        df_trigger=df_trigger,
         indicators=indicators,
     )
 
@@ -707,6 +708,8 @@ def _ema_pullback_triggered(
 
 def _prev_swing_low_price(structure, current_price: float) -> Optional[float]:
     """Most recent confirmed swing low strictly below current price (nearest = highest)."""
+    if structure is None or not hasattr(structure, "points"):
+        return None
     lows = [sp.price for sp in structure.points
             if sp.kind == "low" and sp.price < current_price]
     return max(lows) if lows else None
@@ -714,6 +717,8 @@ def _prev_swing_low_price(structure, current_price: float) -> Optional[float]:
 
 def _prev_swing_high_price(structure, current_price: float) -> Optional[float]:
     """Most recent confirmed swing high strictly above current price (nearest = lowest)."""
+    if structure is None or not hasattr(structure, "points"):
+        return None
     highs = [sp.price for sp in structure.points
              if sp.kind == "high" and sp.price > current_price]
     return min(highs) if highs else None
@@ -723,6 +728,8 @@ def _next_two_swing_highs(
     structure, current_price: float
 ) -> tuple[Optional[float], Optional[float]]:
     """Return the two nearest swing highs above current price (TP1, TP2)."""
+    if structure is None or not hasattr(structure, "points"):
+        return None, None
     highs = sorted(
         sp.price for sp in structure.points
         if sp.kind == "high" and sp.price > current_price
@@ -736,6 +743,8 @@ def _next_two_swing_lows(
     structure, current_price: float
 ) -> tuple[Optional[float], Optional[float]]:
     """Return the two nearest swing lows below current price (TP1, TP2)."""
+    if structure is None or not hasattr(structure, "points"):
+        return None, None
     lows = sorted(
         (sp.price for sp in structure.points
          if sp.kind == "low" and sp.price < current_price),

@@ -51,17 +51,55 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-# Force UTF-8 output on Windows to avoid cp1252 crashes
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
-
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("backtest")
 
-# yfinance hard limits
+# Provider interval hard limits
+_YF_1M_MAX_DAYS  = 7      # 1m data only available for last 7 days
+_YF_5M_MAX_DAYS  = 59     # 5m data only available for last 59 days
 _YF_1H_MAX_DAYS  = 729    # 1H data only available for last 729 days
 _LTF_WARMUP_DAYS = 90     # calendar-day warmup before date_from for LTF
 _HTF_WARMUP_DAYS = 730    # HTF warmup (weekly/daily is unlimited)
+
+
+def _interval_to_timedelta(interval: str) -> timedelta:
+    """Return candle duration timedelta for lookahead-free candle closure verification."""
+    inv = interval.lower().strip()
+    if inv.endswith("m"):
+        return timedelta(minutes=int(inv[:-1]))
+    if inv.endswith("h"):
+        return timedelta(hours=int(inv[:-1]))
+    if inv.endswith("d"):
+        return timedelta(days=int(inv[:-1]))
+    if inv.endswith("w") or inv.endswith("wk"):
+        val = inv[:-2] if inv.endswith("wk") else inv[:-1]
+        return timedelta(weeks=int(val))
+    return timedelta(hours=1)
+
+
+def _max_days_for_interval(inv: str) -> int:
+    """Return maximum historical days supported by yfinance for the interval."""
+    inv = inv.lower().strip()
+    if inv == "1m":
+        return _YF_1M_MAX_DAYS
+    if inv in ("2m", "5m", "15m", "30m"):
+        return _YF_5M_MAX_DAYS
+    if inv in ("60m", "1h", "4h"):
+        return _YF_1H_MAX_DAYS
+    return 3650
+
+
+def _warmup_days_for_interval(inv: str) -> int:
+    """Return required warmup calendar days for the interval."""
+    inv = inv.lower().strip()
+    if inv == "1m":
+        return 2
+    if inv in ("2m", "5m", "15m", "30m"):
+        return 5
+    if inv in ("60m", "1h", "4h"):
+        return 60
+    return _HTF_WARMUP_DAYS
+
 
 
 # ---------------------------------------------------------------------------
@@ -130,9 +168,10 @@ def run_backtest(
     min_score:        float = 5.0,
     max_outcome_bars: int   = 50,
     disabled_setups:  Optional[set] = None,   # e.g. {"Liquidity Sweep + FVG"}
+    style:            Optional[str] = None,   # "swing" | "intraday" | "scalping"
 ) -> BacktestReport:
-    """Run bar-by-bar replay backtest."""
-    from modules.finance.trader.schemas import scan_mode_for, timeframes_for
+    """Run bar-by-bar replay backtest across 3-tier multi-timeframe matrix."""
+    from modules.finance.trader.schemas import scan_mode_for, timeframe_triad_for
     from modules.finance.trader.setups import check_all
     import modules.finance.trader.setups as setups_mod
 
@@ -147,13 +186,33 @@ def run_backtest(
     setups_mod.DISABLED_SETUPS = effective_disabled
 
     try:
-        mode = scan_mode_for(category)
-        htf_tf, ltf_tf, _ = timeframes_for(mode)
+        mode = style if style else scan_mode_for(category)
+        triad = timeframe_triad_for(mode)
+        htf_tf = triad.htf
+        mtf_tf = triad.mtf
+        trigger_tf = triad.trigger
+
+        # Lookback clamping to respect provider limits
+        today = date.today()
+        min_days_limit = min(
+            _max_days_for_interval(triad.trigger),
+            _max_days_for_interval(triad.mtf),
+        )
+        warmup_days = _warmup_days_for_interval(triad.trigger)
+        earliest_allowed = today - timedelta(days=min_days_limit - warmup_days)
+        if date_from < earliest_allowed:
+            print(
+                f"[NOTICE] Lookback clamped for interval constraints ({triad.trigger}/{triad.mtf}): "
+                f"requested {date_from}, adjusted to {earliest_allowed} (max {min_days_limit} days supported)."
+            )
+            date_from = earliest_allowed
+        if date_from >= date_to:
+            date_from = date_to - timedelta(days=1)
 
         print("\n" + "=" * 60)
-        print(f"Strategy Backtest: {ticker} | {mode.upper()} mode")
+        print(f"Strategy Backtest: {ticker} | {mode.upper()} style")
         print(f"Period:  {date_from}  to  {date_to}")
-        print(f"HTF: {htf_tf.upper()}  |  LTF: {ltf_tf.upper()}")
+        print(f"HTF (Where): {htf_tf.upper()}  |  MTF (When): {mtf_tf.upper()}  |  Trigger (How): {trigger_tf.upper()}")
         print("=" * 60)
 
         from modules.finance.trader.setups import ALL_SETUP_NAMES
@@ -164,18 +223,24 @@ def run_backtest(
             print(f"Disabled setups: {', '.join(disabled_setups_list)}")
         print()
         print("Loading historical data ...")
-        full_ltf, full_htf = _download_full_history(ticker, mode, date_from, date_to, category=category)
+        full_trigger, full_mtf, full_htf = _download_full_triad_history(
+            ticker, triad, date_from, date_to, category=category
+        )
 
-        if full_ltf is None or full_ltf.empty:
-            print("[ERROR] No LTF data available.")
+        if full_trigger is None or full_trigger.empty:
+            print("[ERROR] No Trigger data available.")
+            return _empty_report(ticker, category, mode, date_from, date_to)
+        if full_mtf is None or full_mtf.empty:
+            print("[ERROR] No MTF data available.")
             return _empty_report(ticker, category, mode, date_from, date_to)
         if full_htf is None or full_htf.empty:
             print("[ERROR] No HTF data available.")
             return _empty_report(ticker, category, mode, date_from, date_to)
 
         # Normalise indices to timezone-naive for safe comparison
-        full_ltf = _strip_tz(full_ltf)
-        full_htf = _strip_tz(full_htf)
+        full_trigger = _strip_tz(full_trigger)
+        full_mtf     = _strip_tz(full_mtf)
+        full_htf     = _strip_tz(full_htf)
 
         # Find the first bar that is on or after date_from
         start_ts = datetime.combine(date_from, datetime.min.time())
@@ -183,36 +248,33 @@ def run_backtest(
 
         # Find replay start index: first bar >= date_from
         replay_start = None
-        for i, ts in enumerate(full_ltf.index):
+        for i, ts in enumerate(full_trigger.index):
             if ts >= start_ts and i >= warmup:
                 replay_start = i
                 break
 
         if replay_start is None:
-            print(f"[WARN] Not enough LTF bars before {date_from} for warmup.")
-            replay_start = warmup
+            print(f"[WARN] Not enough Trigger bars before {date_from} for warmup.")
+            replay_start = min(warmup, len(full_trigger) - 1)
 
         end_ts = datetime.combine(date_to + timedelta(days=1), datetime.min.time())
-        replay_end = len(full_ltf)
-        for i, ts in enumerate(full_ltf.index):
+        replay_end = len(full_trigger)
+        for i, ts in enumerate(full_trigger.index):
             if ts >= end_ts:
                 replay_end = i
                 break
 
-        n = len(full_ltf)
-        total_replay_bars = replay_end - replay_start
-        print(f"LTF bars total: {n} | replay window: {total_replay_bars} | step: {step}")
+        n = len(full_trigger)
+        total_replay_bars = max(0, replay_end - replay_start)
+        print(f"Trigger bars total: {n} | replay window: {total_replay_bars} | step: {step}")
 
         # ── Pre-compute static indicator series on the FULL dataset (Issue 6 fix) ──
-        # These are O(N) once. Reading them per bar is O(1) instead of O(N).
-        # Structure detection (argrelextrema) still needs per-bar slicing to avoid
-        # lookahead bias — that is an inherent constraint of zero-lookahead replay.
         print("  Pre-computing indicator series...")
         import pandas as pd
 
-        _close = full_ltf["Close"]
-        _high  = full_ltf["High"]
-        _low   = full_ltf["Low"]
+        _close = full_trigger["Close"]
+        _high  = full_trigger["High"]
+        _low   = full_trigger["Low"]
 
         # RSI-14 (Wilder EWM)
         _delta    = _close.diff()
@@ -234,13 +296,12 @@ def run_backtest(
         _tr  = pd.concat([_tr1, _tr2, _tr3], axis=1).max(axis=1)
         _atr14 = _tr.rolling(14).mean().rename("atr_14")
 
-        # Attach precomputed columns to the full_ltf DataFrame
-        # Strategies can read them directly from df_ltf.iloc[-1]["rsi_14"] etc.
-        full_ltf = full_ltf.copy()
-        full_ltf["rsi_14"] = _rsi14
-        full_ltf["ema_8"]  = _ema8
-        full_ltf["ema_21"] = _ema21
-        full_ltf["atr_14"] = _atr14
+        # Attach precomputed columns to the full_trigger DataFrame
+        full_trigger = full_trigger.copy()
+        full_trigger["rsi_14"] = _rsi14
+        full_trigger["ema_8"]  = _ema8
+        full_trigger["ema_21"] = _ema21
+        full_trigger["atr_14"] = _atr14
         print("  Indicator pre-computation done. Starting replay...")
 
         report = BacktestReport(
@@ -248,6 +309,10 @@ def run_backtest(
             date_from=str(date_from), date_to=str(date_to),
             total_bars=total_replay_bars, setups_found=0,
         )
+
+        trigger_delta = _interval_to_timedelta(triad.trigger)
+        mtf_delta     = _interval_to_timedelta(triad.mtf)
+        htf_delta     = _interval_to_timedelta(triad.htf)
 
         # Dedup store: "setup_name|direction" -> last bar_i it fired
         dedup_last: dict[str, int] = {}
@@ -258,19 +323,32 @@ def run_backtest(
             # Progress indicator (no special chars)
             if idx % max(1, total_steps // 20) == 0:
                 pct = idx / total_steps * 100
-                ts  = str(full_ltf.index[bar_i])[:16]
+                ts  = str(full_trigger.index[bar_i])[:16]
                 print(f"  [{pct:4.0f}%] bar {bar_i}/{n}  {ts}", end="\r", flush=True)
 
-            ltf_slice = full_ltf.iloc[:bar_i].copy()
-            bar_ts    = full_ltf.index[bar_i]
+            trigger_slice = full_trigger.iloc[:bar_i].copy()
+            if len(trigger_slice) < warmup:
+                continue
 
-            # HTF slice: only bars strictly before this LTF bar
-            htf_slice = full_htf[full_htf.index < bar_ts].copy()
-            if len(htf_slice) < 20 or len(ltf_slice) < warmup:
+            trigger_close_ts = trigger_slice.index[-1] + trigger_delta
+
+            # Zero-lookahead masking: only closed candles at or prior to trigger completion
+            mtf_slice = full_mtf[full_mtf.index + mtf_delta <= trigger_close_ts].copy()
+            htf_slice = full_htf[full_htf.index + htf_delta <= trigger_close_ts].copy()
+
+            if len(htf_slice) < 20 or len(mtf_slice) < 20:
                 continue
 
             try:
-                triggered = check_all(ticker, category, htf_slice, ltf_slice)
+                triggered = check_all(
+                    ticker,
+                    category,
+                    htf_slice,
+                    trigger_slice,
+                    df_mtf=mtf_slice,
+                    df_trigger=trigger_slice,
+                    mode=mode,
+                )
             except Exception as e:
                 logger.debug("check_all error at bar %d: %s", bar_i, e)
                 continue
@@ -287,11 +365,11 @@ def run_backtest(
                 dedup_last[dedup_key] = bar_i
                 report.setups_found  += 1
 
-                future = full_ltf.iloc[bar_i: bar_i + max_outcome_bars]
+                future = full_trigger.iloc[bar_i: bar_i + max_outcome_bars]
                 outcome, bars_to, realised_rr = _evaluate_outcome(setup, future)
 
                 report.results.append(SetupResult(
-                    fired_at=str(bar_ts)[:16],
+                    fired_at=str(trigger_slice.index[-1])[:16],
                     fired_bar=bar_i,
                     setup_name=setup.setup_name,
                     direction=setup.direction,
@@ -370,54 +448,16 @@ def _evaluate_outcome(setup, future_bars) -> tuple[str, int, float]:
 # Data Download
 # ---------------------------------------------------------------------------
 
-def _download_full_history(
+def _download_full_triad_history(
     ticker: str,
-    mode: str,
+    triad: object,  # TimeframeTriad
     date_from: date,
     date_to: date,
     category: Optional[str] = None,
 ):
-    """Download HTF + LTF history respecting yfinance interval limits.
-
-    yfinance hard limits:
-      1H  -> last 729 days only
-      1D, 1WK -> unlimited history
-
-    HTF always uses unlimited interval (weekly/daily).
-    LTF uses 1H when the window fits; falls back to 1D otherwise.
-    """
-    import yfinance as yf
-
+    """Download HTF, MTF, and Trigger history respecting yfinance interval limits."""
     today    = date.today()
     fetch_to = date_to + timedelta(days=1)
-
-    # HTF: unlimited
-    htf_interval   = "1wk" if mode == "swing" else "1d"
-    htf_fetch_from = date_from - timedelta(days=_HTF_WARMUP_DAYS)
-
-    # LTF: choose interval
-    ltf_warmup_start = date_from - timedelta(days=_LTF_WARMUP_DAYS)
-    earliest_1h      = today - timedelta(days=_YF_1H_MAX_DAYS)
-    total_ltf_days   = (fetch_to - ltf_warmup_start).days
-
-    if ltf_warmup_start >= earliest_1h and total_ltf_days <= _YF_1H_MAX_DAYS:
-        ltf_interval   = "1h"
-        ltf_fetch_from = ltf_warmup_start
-        resample_4h    = (mode == "swing")
-        print(f"LTF interval : 1H {'-> resample 4H' if resample_4h else ''}")
-    else:
-        ltf_interval   = "1d"
-        ltf_fetch_from = ltf_warmup_start
-        resample_4h    = False
-        print(
-            f"[WARN] 1H data not available for this window "
-            f"(start {ltf_warmup_start} vs earliest {earliest_1h}). "
-            f"Using 1D as LTF."
-        )
-        print(
-            f"       Tip: keep --from within last "
-            f"{_YF_1H_MAX_DAYS - _LTF_WARMUP_DAYS} days for 4H precision."
-        )
 
     def _dl(start: date, end: date, interval: str, label: str):
         """Download and normalise one OHLCV block, with local disk caching."""
@@ -484,21 +524,32 @@ def _download_full_history(
         )
         return df
 
-    df_htf = _dl(htf_fetch_from, fetch_to, htf_interval, "HTF")
-    df_ltf = _dl(ltf_fetch_from, fetch_to, ltf_interval, "LTF")
+    htf_warmup_start = max(date_from - timedelta(days=_warmup_days_for_interval(triad.htf)),
+                           today - timedelta(days=_max_days_for_interval(triad.htf) - 1))
+    mtf_warmup_start = max(date_from - timedelta(days=_warmup_days_for_interval(triad.mtf)),
+                           today - timedelta(days=_max_days_for_interval(triad.mtf) - 1))
+    trigger_warmup_start = max(date_from - timedelta(days=_warmup_days_for_interval(triad.trigger)),
+                               today - timedelta(days=_max_days_for_interval(triad.trigger) - 1))
 
-    # Resample 1H -> 4H for swing mode
-    if resample_4h and df_ltf is not None and not df_ltf.empty:
-        df_ltf = df_ltf.resample("4h").agg({
-            "Open":   "first",
-            "High":   "max",
-            "Low":    "min",
-            "Close":  "last",
-            "Volume": "sum",
-        }).dropna()
-        print(f"  LTF resampled to 4H: {len(df_ltf)} bars")
+    df_htf     = _dl(htf_warmup_start, fetch_to, triad.htf, "HTF")
+    df_mtf     = _dl(mtf_warmup_start, fetch_to, triad.mtf, "MTF")
+    df_trigger = _dl(trigger_warmup_start, fetch_to, triad.trigger, "Trigger")
 
-    return df_ltf, df_htf
+    return df_trigger, df_mtf, df_htf
+
+
+def _download_full_history(
+    ticker: str,
+    mode: str,
+    date_from: date,
+    date_to: date,
+    category: Optional[str] = None,
+):
+    """Backward compatible wrapper downloading 2-tier history."""
+    from modules.finance.trader.schemas import timeframe_triad_for
+    triad = timeframe_triad_for(mode)
+    df_trigger, _, df_htf = _download_full_triad_history(ticker, triad, date_from, date_to, category=category)
+    return df_trigger, df_htf
 
 
 def _strip_tz(df):
@@ -648,6 +699,9 @@ def main() -> None:
                         ))
     parser.add_argument("--list-setups", action="store_true",
                         help="Print all available setup names and exit")
+    parser.add_argument("--style",     default=None,
+                        choices=["swing", "intraday", "scalping"],
+                        help="Override trading style: swing | intraday | scalping (default: inferred from category)")
     parser.add_argument("--out",       default=None, help="Save trades to CSV path")
     parser.add_argument("--verbose",   action="store_true",
                         help="Print individual trade table")
@@ -694,6 +748,7 @@ def main() -> None:
         min_score=args.min_score,
         max_outcome_bars=args.max_bars,
         disabled_setups=set(args.disable) if args.disable else None,
+        style=args.style,
     )
 
     print_report(report, verbose=args.verbose)
@@ -704,5 +759,9 @@ def main() -> None:
 
 if __name__ == "__main__":
     import os
+    if hasattr(sys.stdout, "buffer"):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "buffer"):
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
     main()

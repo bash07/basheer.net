@@ -27,7 +27,7 @@ class StrategyContext:
 
     __slots__ = (
         "ticker", "category", "mode", "current_price",
-        "df_htf", "df_ltf", "indicators", "_active_bias",
+        "df_htf", "df_mtf", "df_trigger", "indicators", "_active_bias",
     )
 
     def __init__(
@@ -36,18 +36,34 @@ class StrategyContext:
         category: str,
         mode: str,
         current_price: float,
-        df_htf,           # pd.DataFrame
-        df_ltf,           # pd.DataFrame
+        df_htf,                          # pd.DataFrame (Where: Trend & Key Zones)
+        df_ltf = None,                   # pd.DataFrame (legacy 2-tier alias)
         indicators: dict | None = None,
+        df_mtf = None,                   # pd.DataFrame (When: Structure & Divergence)
+        df_trigger = None,               # pd.DataFrame (How: Entry Rejection & Execution)
     ) -> None:
         self.ticker        = ticker
         self.category      = category
         self.mode          = mode
         self.current_price = current_price
         self.df_htf        = df_htf
-        self.df_ltf        = df_ltf
+        # Support both 2-tier (df_htf, df_ltf) and 3-tier (df_htf, df_mtf, df_trigger)
+        self.df_trigger    = df_trigger if df_trigger is not None else df_ltf
+        self.df_mtf        = df_mtf if df_mtf is not None else df_ltf
         self.indicators    = indicators if indicators is not None else {}
         self._active_bias  = None
+
+    @property
+    def df_ltf(self):
+        """Backward-compatible alias for existing strategies — maps to df_trigger."""
+        return self.df_trigger if self.df_trigger is not None else self.df_mtf
+
+    @df_ltf.setter
+    def df_ltf(self, val):
+        self.df_trigger = val
+        if self.df_mtf is None:
+            self.df_mtf = val
+
 
     def bind_strategy(self, strategy) -> None:
         """Bind context to a specific strategy before evaluate(). Resolves active bias."""
@@ -291,6 +307,10 @@ class BaseStrategy(ABC):
     #: Whether this strategy requires non-neutral directional bias.
     #: Trend strategies set True; mean-reversion/range strategies set False.
     requires_directional_bias: bool = True
+
+    #: Supported trading styles: subset of ["swing", "intraday", "scalping"].
+    #: If None or empty, the strategy supports all trading styles.
+    supported_styles: list[str] | None = None
 
     #: If set, override (htf_interval, ltf_interval) for this strategy.
     #: Example: ("1h", "15m") for a shorter-timeframe scalping strategy.
