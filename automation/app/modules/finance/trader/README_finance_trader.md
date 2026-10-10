@@ -90,6 +90,9 @@ flowchart TD
 ### 3.1. Strategies Sub-package (`modules/finance/trader/strategies/`)
 Every strategy inherits from `BaseStrategy`. New strategies added as `.py` files in this directory are auto-discovered without modifying any core orchestrator files.
 
+> [!TIP]
+> For detailed backtest benchmarks across market regimes, trade expectancy, and dynamic strategy selection rules, see the **[Strategy Playbook & Market Regime Selection Matrix](STRATEGY_PLAYBOOK.md)**.
+
 ```python
 from modules.finance.trader.strategies.base import BaseStrategy, StrategyContext
 from modules.finance.trader.schemas import TradeSetup

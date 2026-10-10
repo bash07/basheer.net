@@ -28,7 +28,7 @@ _FVG_MIN_GAP_PCT  = 0.003 # 0.3% minimum gap to filter micro-FVGs
 _FVG_DISP_RATIO   = 1.2  # middle candle body must be > this × ATR20
 _EQL_TOLERANCE    = 0.001 # 0.1% tolerance for equal highs/lows grouping
 _EQL_MIN_POINTS   = 2    # minimum pivots to form an EQH/EQL
-_BOS_LOOKBACK     = 15   # bars: only report BOS events within last N bars
+_BOS_LOOKBACK     = 40   # bars: scan recent structure break events up to 40 bars
 
 
 # ── 1. Market Structure ───────────────────────────────────────────────────────
