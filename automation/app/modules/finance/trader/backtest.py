@@ -49,7 +49,7 @@ import logging
 import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, NamedTuple
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("backtest")
@@ -106,6 +106,23 @@ def _warmup_days_for_interval(inv: str) -> int:
 # Result types
 # ---------------------------------------------------------------------------
 
+class OutcomeEvaluation(NamedTuple):
+    outcome:        str
+    bars_to_result: int
+    realised_rr:    float
+    tp2:            Optional[float] = None
+    exit_state:     str   = "OPEN"     # "FULL_WIN" | "SCRATCH_WIN" | "FULL_LOSS" | "TP1_OPEN" | "OPEN"
+    tp1_hit:        bool  = False
+    tp2_hit:        bool  = False
+    be_hit:         bool  = False
+    bars_to_tp1:    int   = -1
+    bars_to_tp2:    int   = -1
+    blended_rr:     float = 0.0        # OMS scaled: 50% @ TP1 + 50% @ (TP2 or BE)
+    mfe_rr:         float = 0.0        # Maximum Favorable Excursion in R-units
+    mae_rr:         float = 0.0        # Maximum Adverse Excursion in R-units
+    tp_efficiency:  float = 0.0        # blended_rr / mfe_rr * 100%
+
+
 @dataclass
 class SetupResult:
     fired_at:       str
@@ -126,6 +143,19 @@ class SetupResult:
     bars_to_result: int   = -1
     realised_rr:    float = 0.0
 
+    # ── Multi-Stage TP & Excursion Extensions ──
+    tp2:            Optional[float] = None
+    exit_state:     str   = "OPEN"     # "FULL_WIN" | "SCRATCH_WIN" | "FULL_LOSS" | "TP1_OPEN" | "OPEN"
+    tp1_hit:        bool  = False
+    tp2_hit:        bool  = False
+    be_hit:         bool  = False
+    bars_to_tp1:    int   = -1
+    bars_to_tp2:    int   = -1
+    blended_rr:     float = 0.0
+    mfe_rr:         float = 0.0
+    mae_rr:         float = 0.0
+    tp_efficiency:  float = 0.0
+
 
 @dataclass
 class BacktestReport:
@@ -144,6 +174,20 @@ class BacktestReport:
     avg_bars:        float = 0.0
     results:         list[SetupResult] = field(default_factory=list)
 
+    # Multi-stage TP & Excursion aggregates
+    tp1_wins:           int   = 0
+    tp2_wins:           int   = 0
+    be_scratches:       int   = 0
+    runner_conv_pct:    float = 0.0
+    blended_expectancy: float = 0.0
+    avg_blended_won_rr: float = 0.0
+    avg_mfe:            float = 0.0
+    avg_mae:            float = 0.0
+    avg_tp_efficiency:  float = 0.0
+    avg_bars_tp1:       float = 0.0
+    avg_bars_tp2:       float = 0.0
+    avg_bars_sl:        float = 0.0
+
     def compute(self) -> None:
         closed = [r for r in self.results if r.outcome != "OPEN"]
         self.wins     = sum(1 for r in self.results if r.outcome == "WIN")
@@ -154,6 +198,36 @@ class BacktestReport:
         self.avg_rr_won = sum(r.realised_rr for r in won) / len(won) if won else 0.0
         bars_known = [r.bars_to_result for r in self.results if r.bars_to_result > 0]
         self.avg_bars = sum(bars_known) / len(bars_known) if bars_known else 0.0
+
+        # Multi-stage TP & Excursion aggregates
+        self.tp1_wins = sum(1 for r in self.results if r.tp1_hit)
+        self.tp2_wins = sum(1 for r in self.results if r.tp2_hit)
+        self.be_scratches = sum(1 for r in self.results if r.be_hit)
+        self.runner_conv_pct = (self.tp2_wins / self.tp1_wins * 100.0) if self.tp1_wins else 0.0
+
+        closed_blended = [r for r in self.results if r.exit_state in ("FULL_WIN", "SCRATCH_WIN", "FULL_LOSS")]
+        self.blended_expectancy = (sum(r.blended_rr for r in closed_blended) / len(closed_blended)) if closed_blended else 0.0
+
+        won_blended = [r for r in self.results if r.exit_state in ("FULL_WIN", "SCRATCH_WIN")]
+        self.avg_blended_won_rr = (sum(r.blended_rr for r in won_blended) / len(won_blended)) if won_blended else 0.0
+
+        mfe_known = [r.mfe_rr for r in self.results if r.mfe_rr > 0]
+        self.avg_mfe = sum(mfe_known) / len(mfe_known) if mfe_known else 0.0
+
+        mae_known = [r.mae_rr for r in self.results if r.mae_rr < 0]
+        self.avg_mae = sum(mae_known) / len(mae_known) if mae_known else 0.0
+
+        eff_known = [r.tp_efficiency for r in self.results if r.tp_efficiency > 0]
+        self.avg_tp_efficiency = sum(eff_known) / len(eff_known) if eff_known else 0.0
+
+        tp1_bars = [r.bars_to_tp1 for r in self.results if r.bars_to_tp1 > 0]
+        self.avg_bars_tp1 = sum(tp1_bars) / len(tp1_bars) if tp1_bars else 0.0
+
+        tp2_bars = [r.bars_to_tp2 for r in self.results if r.bars_to_tp2 > 0]
+        self.avg_bars_tp2 = sum(tp2_bars) / len(tp2_bars) if tp2_bars else 0.0
+
+        sl_bars = [r.bars_to_result for r in self.results if r.outcome == "LOSS" and r.bars_to_result > 0]
+        self.avg_bars_sl = sum(sl_bars) / len(sl_bars) if sl_bars else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +449,7 @@ def run_backtest(
                 report.setups_found  += 1
 
                 future = full_trigger.iloc[bar_i: bar_i + max_outcome_bars]
-                outcome, bars_to, realised_rr = _evaluate_outcome(setup, future)
+                ev = _evaluate_outcome(setup, future)
 
                 report.results.append(SetupResult(
                     fired_at=str(trigger_slice.index[-1])[:16],
@@ -392,9 +466,20 @@ def run_backtest(
                     rr_ratio=round(setup.rr_ratio, 2),
                     regime=active_regime,
                     macro_regime=macro_reg,
-                    outcome=outcome,
-                    bars_to_result=bars_to,
-                    realised_rr=round(realised_rr, 2),
+                    outcome=ev.outcome,
+                    bars_to_result=ev.bars_to_result,
+                    realised_rr=round(ev.realised_rr, 2),
+                    tp2=round(ev.tp2, 4) if ev.tp2 is not None else None,
+                    exit_state=ev.exit_state,
+                    tp1_hit=ev.tp1_hit,
+                    tp2_hit=ev.tp2_hit,
+                    be_hit=ev.be_hit,
+                    bars_to_tp1=ev.bars_to_tp1,
+                    bars_to_tp2=ev.bars_to_tp2,
+                    blended_rr=round(ev.blended_rr, 2),
+                    mfe_rr=round(ev.mfe_rr, 2),
+                    mae_rr=round(ev.mae_rr, 2),
+                    tp_efficiency=round(ev.tp_efficiency, 1),
                 ))
 
         print(f"\n  Done. {report.setups_found} setups found across {total_replay_bars} bars.")
@@ -421,36 +506,162 @@ def _empty_report(ticker, category, mode, date_from, date_to) -> BacktestReport:
 # Outcome Evaluation
 # ---------------------------------------------------------------------------
 
-def _evaluate_outcome(setup, future_bars) -> tuple[str, int, float]:
-    """Check if TP1 or SL was hit first in the forward bars."""
-    entry  = setup.entry_mid
-    sl     = setup.stop_loss
-    tp1    = setup.tp1
-    risk   = abs(entry - sl)
-    reward = abs(tp1 - entry)
-    planned_rr = reward / risk if risk > 0 else 0.0
+def _evaluate_outcome(setup, future_bars) -> OutcomeEvaluation:
+    """Evaluate multi-stage outcome (TP1 partial scale-out + BE stop + TP2 runner) and price excursions."""
+    if future_bars is None or future_bars.empty:
+        return OutcomeEvaluation(outcome="OPEN", bars_to_result=-1, realised_rr=0.0)
 
-    for i, (_, row) in enumerate(future_bars.iterrows()):
+    entry = float(setup.entry_mid)
+    sl    = float(setup.stop_loss)
+    tp1   = float(setup.tp1)
+    risk  = abs(entry - sl)
+
+    if risk <= 1e-9:
+        return OutcomeEvaluation(outcome="OPEN", bars_to_result=-1, realised_rr=0.0)
+
+    # Derive or extract TP2
+    setup_tp2 = getattr(setup, "tp2", None)
+    if setup_tp2 is not None and abs(setup_tp2 - entry) > 1e-9:
+        tp2 = float(setup_tp2)
+    else:
+        # Replicate OMS engine default (1.5x of TP1 distance from entry)
+        tp1_dist = abs(tp1 - entry)
+        tp2 = entry + (tp1_dist * 1.5 if setup.direction == "long" else -tp1_dist * 1.5)
+
+    rr_tp1 = abs(tp1 - entry) / risk
+    rr_tp2 = abs(tp2 - entry) / risk
+
+    max_fav_r   = 0.0
+    max_adv_r   = 0.0
+    tp1_hit     = False
+    tp2_hit     = False
+    be_hit      = False
+    bars_to_tp1 = -1
+    bars_to_tp2 = -1
+    bars_to_res = -1
+    legacy_out  = "OPEN"
+    legacy_rr   = 0.0
+    exit_state  = "OPEN"
+    blended_rr  = 0.0
+
+    for i, (_, row) in enumerate(future_bars.iterrows(), start=1):
         hi = float(row["High"])
         lo = float(row["Low"])
 
+        # Track Maximum Favorable (MFE) and Adverse (MAE) Excursions
         if setup.direction == "long":
-            tp_hit = hi >= tp1
-            sl_hit = lo <= sl
+            fav_r = (hi - entry) / risk
+            adv_r = (entry - lo) / risk
         else:
-            tp_hit = lo <= tp1
-            sl_hit = hi >= sl
+            fav_r = (entry - lo) / risk
+            adv_r = (hi - entry) / risk
 
-        if tp_hit and sl_hit:
-            # Ambiguous candle: whichever target is closer to entry wins
-            tp_hit = abs(entry - tp1) < abs(entry - sl)
+        if fav_r > max_fav_r:
+            max_fav_r = fav_r
+        if adv_r > max_adv_r:
+            max_adv_r = adv_r
 
-        if tp_hit:
-            return "WIN",  i + 1, planned_rr
-        if sl_hit:
-            return "LOSS", i + 1, -1.0
+        # --- Stage 1: Before TP1 is hit ---
+        if not tp1_hit:
+            if setup.direction == "long":
+                c_tp1 = hi >= tp1
+                c_sl  = lo <= sl
+            else:
+                c_tp1 = lo <= tp1
+                c_sl  = hi >= sl
 
-    return "OPEN", -1, 0.0
+            # Ambiguous candle policy: conservative capital preservation assumes SL hit first
+            if c_tp1 and c_sl:
+                c_tp1 = False
+                c_sl  = True
+
+            if c_sl:
+                legacy_out = "LOSS"
+                legacy_rr  = -1.0
+                blended_rr = -1.0
+                exit_state = "FULL_LOSS"
+                bars_to_res = i
+                break
+
+            if c_tp1:
+                tp1_hit = True
+                bars_to_tp1 = i
+                bars_to_res = i
+                legacy_out  = "WIN"
+                legacy_rr   = rr_tp1
+
+                # Check if TP2 was also reached on this same expansion candle
+                same_tp2 = (hi >= tp2) if setup.direction == "long" else (lo <= tp2)
+                if same_tp2:
+                    tp2_hit = True
+                    bars_to_tp2 = i
+                    exit_state = "FULL_WIN"
+                    blended_rr = (0.5 * rr_tp1) + (0.5 * rr_tp2)
+                    break
+                else:
+                    # Runner continues into subsequent bars (identical to oms/engine.py)
+                    continue
+
+        # --- Stage 2: After TP1 is hit (50% runner targeting TP2 with SL at BE) ---
+        else:
+            if setup.direction == "long":
+                r_tp2 = hi >= tp2
+                r_be  = lo <= entry
+            else:
+                r_tp2 = lo <= tp2
+                r_be  = hi >= entry
+
+            if r_tp2 and r_be:
+                # Ambiguous: conservative default assumes BE
+                r_tp2 = False
+                r_be  = True
+
+            if r_tp2:
+                tp2_hit = True
+                bars_to_tp2 = i
+                exit_state = "FULL_WIN"
+                blended_rr = (0.5 * rr_tp1) + (0.5 * rr_tp2)
+                break
+            elif r_be:
+                be_hit = True
+                exit_state = "SCRATCH_WIN"
+                blended_rr = 0.5 * rr_tp1
+                break
+
+    # If simulation period finished while trade was still running
+    if tp1_hit and not tp2_hit and not be_hit:
+        exit_state = "TP1_OPEN"
+        last_close = float(future_bars.iloc[-1]["Close"])
+        if setup.direction == "long":
+            unrealized_r = (last_close - entry) / risk
+        else:
+            unrealized_r = (entry - last_close) / risk
+        unrealized_r = max(0.0, unrealized_r)  # protected by breakeven stop
+        blended_rr = (0.5 * rr_tp1) + (0.5 * unrealized_r)
+    elif not tp1_hit and exit_state == "OPEN":
+        legacy_out = "OPEN"
+        legacy_rr  = 0.0
+        blended_rr = 0.0
+        exit_state = "OPEN"
+
+    tp_eff = (blended_rr / max_fav_r * 100.0) if max_fav_r > 0 and blended_rr > 0 else 0.0
+
+    return OutcomeEvaluation(
+        outcome=legacy_out,
+        bars_to_result=bars_to_res,
+        realised_rr=round(legacy_rr, 4),
+        tp2=round(tp2, 4),
+        exit_state=exit_state,
+        tp1_hit=tp1_hit,
+        tp2_hit=tp2_hit,
+        be_hit=be_hit,
+        bars_to_tp1=bars_to_tp1,
+        bars_to_tp2=bars_to_tp2,
+        blended_rr=round(blended_rr, 4),
+        mfe_rr=round(max_fav_r, 4),
+        mae_rr=-round(max_adv_r, 4),
+        tp_efficiency=round(tp_eff, 2),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -596,16 +807,37 @@ def print_report(report: BacktestReport, verbose: bool = False) -> None:
         return
 
     closed = report.wins + report.losses
-    print(f"  WIN  (TP1 hit) : {report.wins:3d}  ({report.win_rate:.1f}%)")
-    print(f"  LOSS (SL  hit) : {report.losses:3d}  ({(100 - report.win_rate):.1f}% of closed)")
-    print(f"  OPEN (pending) : {report.open_:3d}")
-    print(f"  Avg R:R (wins) : {report.avg_rr_won:.2f}x")
-    print(f"  Avg bars/exit  : {report.avg_bars:.1f}")
-
+    single_exp = 0.0
     if closed > 0:
         wr  = report.win_rate / 100
-        exp = (wr * report.avg_rr_won) - ((1 - wr) * 1.0)
-        print(f"  Expectancy     : {exp:+.2f}R per trade")
+        single_exp = (wr * report.avg_rr_won) - ((1 - wr) * 1.0)
+
+    print("  Single TP1 Benchmark (100% exit at TP1):")
+    print(f"    WIN  (TP1 hit) : {report.wins:3d}  ({report.win_rate:.1f}%)")
+    print(f"    LOSS (SL  hit) : {report.losses:3d}  ({(100 - report.win_rate):.1f}% of closed)")
+    print(f"    OPEN (pending) : {report.open_:3d}")
+    print(f"    Avg R:R (wins) : {report.avg_rr_won:.2f}x")
+    print(f"    Avg bars/exit  : {report.avg_bars:.1f}")
+    if closed > 0:
+        print(f"    Expectancy     : {single_exp:+.2f}R per trade")
+
+    # Multi-Stage OMS Scaled Execution summary
+    closed_blended = [r for r in report.results if r.exit_state in ("FULL_WIN", "SCRATCH_WIN", "FULL_LOSS")]
+    if closed_blended:
+        full_wins = sum(1 for r in report.results if r.exit_state == "FULL_WIN")
+        scratches = sum(1 for r in report.results if r.exit_state == "SCRATCH_WIN")
+        losses    = sum(1 for r in report.results if r.exit_state == "FULL_LOSS")
+        tp1_n     = report.tp1_wins
+        print(f"\n  OMS Scaled Execution (50% TP1 + 50% TP2 / Breakeven SL):")
+        print(f"    Full Win (TP1+TP2) : {full_wins:3d}  ({full_wins/len(closed_blended)*100:.1f}%)")
+        print(f"    Scratch  (TP1+BE)  : {scratches:3d}  ({scratches/len(closed_blended)*100:.1f}%)")
+        print(f"    Full Loss (SL)     : {losses:3d}  ({losses/len(closed_blended)*100:.1f}%)")
+        print(f"    Runner Conv (TP2)  : {report.runner_conv_pct:.1f}% ({full_wins}/{tp1_n} TP1 winners reached TP2)")
+        scratch_decay_pct = (100.0 - report.runner_conv_pct) if tp1_n else 0.0
+        print(f"    BE Scratch Decay   : {scratch_decay_pct:.1f}% ({scratches}/{tp1_n} runners stopped at BE)")
+        print(f"    Avg Blended Win RR : {report.avg_blended_won_rr:.2f}x")
+        delta_str = f"({report.blended_expectancy - single_exp:+.2f}R delta vs single TP1)" if closed > 0 else ""
+        print(f"    Blended Expectancy : {report.blended_expectancy:+.2f}R per trade  {delta_str}")
 
     # By setup
     print(f"\n  {'Setup':<30} {'N':>4} {'W':>4} {'WR%':>6} {'AvgRR':>7}")
@@ -620,6 +852,61 @@ def print_report(report: BacktestReport, verbose: bool = False) -> None:
         won      = [r for r in rows if r.outcome == "WIN"]
         avg_rr   = sum(r.realised_rr for r in won) / len(won) if won else 0.0
         print(f"  {name:<30} {len(rows):>4} {wins:>4} {wr_pct:>5.1f}% {avg_rr:>6.2f}x")
+
+    # Multi-Stage Take-Profit & Runner Conversion Report
+    print(f"\n  {'MULTI-STAGE TAKE-PROFIT & RUNNER CONVERSION REPORT':^95}")
+    print(f"  {'='*95}")
+    print(f"  {'Setup':<28} {'N':>4} {'TP1%':>6} {'TP2%':>6} {'Conv%':>7} {'BE%':>6} {'SingleExp':>10} {'ScaledExp':>10} {'Delta':>8}")
+    print(f"  {'-'*95}")
+    for name, rows in by_setup.items():
+        n = len(rows)
+        tp1_hits = sum(1 for r in rows if r.tp1_hit)
+        tp2_hits = sum(1 for r in rows if r.tp2_hit)
+        be_hits  = sum(1 for r in rows if r.be_hit)
+        c_n = sum(1 for r in rows if r.outcome != "OPEN")
+        tp1_pct = (tp1_hits / c_n * 100.0) if c_n else 0.0
+        tp2_pct = (tp2_hits / c_n * 100.0) if c_n else 0.0
+        conv_pct = (tp2_hits / tp1_hits * 100.0) if tp1_hits else 0.0
+        be_pct   = (be_hits / tp1_hits * 100.0) if tp1_hits else 0.0
+
+        w_rows = [r for r in rows if r.outcome == "WIN"]
+        avg_rr_w = sum(r.realised_rr for r in w_rows) / len(w_rows) if w_rows else 0.0
+        wr_r = tp1_pct / 100.0
+        s_exp = (wr_r * avg_rr_w) - ((1.0 - wr_r) * 1.0) if c_n else 0.0
+
+        c_blended = [r for r in rows if r.exit_state in ("FULL_WIN", "SCRATCH_WIN", "FULL_LOSS")]
+        sc_exp = sum(r.blended_rr for r in c_blended) / len(c_blended) if c_blended else 0.0
+        d_exp = sc_exp - s_exp
+
+        print(
+            f"  {name:<28} {n:>4} {tp1_pct:>5.1f}% {tp2_pct:>5.1f}% {conv_pct:>6.1f}% {be_pct:>5.1f}% "
+            f"{s_exp:>+9.2f}R {sc_exp:>+9.2f}R {d_exp:>+7.2f}R"
+        )
+
+    # Excursion & Take-Profit Efficiency Report (MFE / MAE)
+    print(f"\n  {'EXCURSION & TAKE-PROFIT EFFICIENCY REPORT (MFE / MAE)':^95}")
+    print(f"  {'='*95}")
+    print(f"  {'Setup':<28} {'AvgMFE':>8} {'AvgMAE':>8} {'TPEffic%':>9} {'BarsTP1':>8} {'BarsTP2':>8} {'BarsSL':>7}")
+    print(f"  {'-'*95}")
+    for name, rows in by_setup.items():
+        mfe_vals = [r.mfe_rr for r in rows if r.mfe_rr > 0]
+        avg_mfe = sum(mfe_vals) / len(mfe_vals) if mfe_vals else 0.0
+        mae_vals = [r.mae_rr for r in rows if r.mae_rr < 0]
+        avg_mae = sum(mae_vals) / len(mae_vals) if mae_vals else 0.0
+        eff_vals = [r.tp_efficiency for r in rows if r.tp_efficiency > 0]
+        avg_eff = sum(eff_vals) / len(eff_vals) if eff_vals else 0.0
+
+        b_tp1 = [r.bars_to_tp1 for r in rows if r.bars_to_tp1 > 0]
+        avg_b_tp1 = sum(b_tp1) / len(b_tp1) if b_tp1 else 0.0
+        b_tp2 = [r.bars_to_tp2 for r in rows if r.bars_to_tp2 > 0]
+        avg_b_tp2 = sum(b_tp2) / len(b_tp2) if b_tp2 else 0.0
+        b_sl = [r.bars_to_result for r in rows if r.outcome == "LOSS" and r.bars_to_result > 0]
+        avg_b_sl = sum(b_sl) / len(b_sl) if b_sl else 0.0
+
+        print(
+            f"  {name:<28} {avg_mfe:>+7.2f}R {avg_mae:>+7.2f}R {avg_eff:>8.1f}% "
+            f"{avg_b_tp1:>8.1f} {avg_b_tp2:>8.1f} {avg_b_sl:>7.1f}"
+        )
 
     # By Macro Trend (Bull / Bear / Ranging)
     print(f"\n  {'Macro Trend':<24} {'N':>4} {'W':>4} {'L':>4} {'WR%':>6} {'AvgRR':>7} {'Expectancy':>11}")
@@ -698,6 +985,38 @@ def print_report(report: BacktestReport, verbose: bool = False) -> None:
         exp_str  = f"{exp_val:+.2f}R" if closed_n else "N/A"
         print(f"  {reg_name:<32} {len(rows):>4} {wins:>4} {losses:>4} {wr_pct:>5.1f}% {avg_rr:>6.2f}x {exp_str:>11}")
 
+    # Regime-Stratified Runner Conversion Report
+    if by_regime:
+        print(f"\n  {'REGIME-STRATIFIED RUNNER CONVERSION REPORT':^95}")
+        print(f"  {'='*95}")
+        print(f"  {'Market Regime (Micro)':<30} {'N':>4} {'TP1%':>6} {'TP2%':>6} {'Conv%':>7} {'BE%':>6} {'ScaledExp':>10} {'Optimal Policy':<22}")
+        print(f"  {'-'*95}")
+        for reg_name, rows in sorted(by_regime.items(), key=lambda x: -len(x[1])):
+            n = len(rows)
+            tp1_hits = sum(1 for r in rows if r.tp1_hit)
+            tp2_hits = sum(1 for r in rows if r.tp2_hit)
+            be_hits  = sum(1 for r in rows if r.be_hit)
+            c_n = sum(1 for r in rows if r.outcome != "OPEN")
+            tp1_pct = (tp1_hits / c_n * 100.0) if c_n else 0.0
+            tp2_pct = (tp2_hits / c_n * 100.0) if c_n else 0.0
+            conv_pct = (tp2_hits / tp1_hits * 100.0) if tp1_hits else 0.0
+            be_pct   = (be_hits / tp1_hits * 100.0) if tp1_hits else 0.0
+
+            c_blended = [r for r in rows if r.exit_state in ("FULL_WIN", "SCRATCH_WIN", "FULL_LOSS")]
+            sc_exp = sum(r.blended_rr for r in c_blended) / len(c_blended) if c_blended else 0.0
+
+            if conv_pct >= 50.0:
+                policy = "50% TP1 + TP2 Runner"
+            elif tp1_pct >= 35.0:
+                policy = "100% Full Exit at TP1"
+            else:
+                policy = "Stand Aside / Filter"
+
+            print(
+                f"  {reg_name:<30} {n:>4} {tp1_pct:>5.1f}% {tp2_pct:>5.1f}% {conv_pct:>6.1f}% {be_pct:>5.1f}% "
+                f"{sc_exp:>+9.2f}R {policy:<22}"
+            )
+
     # Cross-Tab: Setup vs Market Regime
     if len(by_setup) > 1 or len(by_regime) > 1:
         print(f"\n  Cross-Tab: Setup Performance by Microstructure Regime:")
@@ -744,17 +1063,17 @@ def print_report(report: BacktestReport, verbose: bool = False) -> None:
 
     if verbose and report.results:
         print(f"\n  Individual trades (last 30):")
-        print(f"  {'Date':<18} {'Setup':<22} {'Macro':<8} {'Regime':<24} {'Dir':<5} {'Sc':>4} {'RR':>5} {'Res':<5} {'Bars':>5}")
-        print(f"  {sep}")
+        print(f"  {'Date':<17} {'Setup':<21} {'Macro':<8} {'Regime':<20} {'Dir':<5} {'Sc':>4} {'TP1':>5} {'Scale':>5} {'ExitState':<11} {'MFE':>6} {'MAE':>6} {'Bars':>5}")
+        print(f"  {'-'*115}")
         for r in report.results[-30:]:
-            tag = {"WIN": "[W]", "LOSS": "[L]", "OPEN": "[?]"}.get(r.outcome, "[ ]")
-            reg_short = (r.regime[:21] + "..") if len(r.regime) > 23 else r.regime
+            tag = {"FULL_WIN": "[W2]", "SCRATCH_WIN": "[BE]", "FULL_LOSS": "[L ]", "TP1_OPEN": "[W?]", "OPEN": "[? ]"}.get(r.exit_state, "[  ]")
+            reg_short = (r.regime[:18] + "..") if len(r.regime) > 20 else r.regime
             print(
-                f"  {r.fired_at:<18} {r.setup_name:<22} {r.macro_regime:<8} {reg_short:<24} {r.direction:<5} "
-                f"{r.conf_score:>4.1f} {r.rr_ratio:>5.1f}x {tag} {r.outcome:<3} {r.bars_to_result:>5}"
+                f"  {r.fired_at:<17} {r.setup_name:<21} {r.macro_regime:<8} {reg_short:<20} {r.direction:<5} "
+                f"{r.conf_score:>4.1f} {r.rr_ratio:>4.1f}x {r.blended_rr:>4.1f}x {tag} {r.exit_state:<11} {r.mfe_rr:>+5.1f}R {r.mae_rr:>+5.1f}R {r.bars_to_result:>5}"
             )
 
-    print("=" * 60 + "\n")
+    print("=" * 70 + "\n")
 
 
 def save_csv(report: BacktestReport, path: str) -> None:

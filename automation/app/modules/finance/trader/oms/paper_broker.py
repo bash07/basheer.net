@@ -106,7 +106,22 @@ class PaperBroker(Broker):
                 }
                 self._save_state(state)
                 return state
-            return self._load_state()
+            return self._load_file_state()
+
+    def _load_file_state(self) -> dict:
+        """Read account state from JSON file."""
+        try:
+            with open(self._state_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error("[oms.paper] Failed to read state file: %s", e)
+            return {
+                "initial_balance": self._initial_balance,
+                "cash": self._initial_balance,
+                "total_realised_pnl": 0.0,
+                "currency": "USD",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
 
     def _load_state(self, db=None) -> dict:
         """Load account state from DB (or file fallback)."""

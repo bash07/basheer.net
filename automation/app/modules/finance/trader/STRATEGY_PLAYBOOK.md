@@ -327,8 +327,18 @@ python -m modules.finance.trader.backtest --ticker BTC-USD --days 14 --verbose
 
 Upon simulation completion, `backtest.py` generates comprehensive post-hoc diagnostic tables:
 
-1. **Overall Setup Breakdown**: Aggregate metrics per strategy (Trades, Win Rate, Avg R:R, Expectancy).
-2. **Macro Trend Breakdown**:
+1. **Overall Setup Breakdown**: Aggregate metrics per strategy comparing single-target benchmark vs. multi-stage execution.
+2. **OMS Scaled Execution vs. Single TP1 Benchmark**:
+   - Compares **Single TP1 Policy** (100% exit at TP1) against **OMS 2-Stage Scaling** (50% TP1 + 50% TP2 / Breakeven SL).
+   - Reports **Runner Conversion Rate** (`TP1 -> TP2`), **BE Scratch Decay Rate**, and **Delta Expectancy Alpha ($\Delta R$)**.
+3. **Multi-Stage Take-Profit & Runner Conversion Report**:
+   - Cross-tabulates each setup against `TP1%`, `TP2%`, `Conv%`, `BE%`, `SingleExp`, `ScaledExp`, and `Delta Alpha`.
+4. **Excursion & Take-Profit Efficiency Report (MFE / MAE)**:
+   - **Average MFE (Maximum Favorable Excursion)**: Peak positive $R$-multiple reached during the trade lifetime.
+   - **Average MAE (Maximum Adverse Excursion)**: Maximum drawdown $R$-multiple endured before exiting.
+   - **TP Efficiency Index**: $\frac{\text{Scaled Realized } R}{\text{Peak MFE } R} \times 100\%$.
+   - **Time Velocity**: `Avg Bars TP1`, `Avg Bars TP2`, and `Avg Bars SL`.
+5. **Macro Trend Breakdown**:
    ```
    ====================================================================================================
    MACRO TREND BREAKDOWN (Bull / Bear / Ranging)
@@ -339,15 +349,17 @@ Upon simulation completion, `backtest.py` generates comprehensive post-hoc diagn
    Bear                   18         8        10       0        44.4%         2.41x          +0.52R
    Ranging                12         5         7       0        41.7%         1.24x          -0.07R
    ```
-3. **Trade Direction vs Macro Trend Alignment**:
+6. **Trade Direction vs Macro Trend Alignment**:
    - Segregates **Pro-Trend** trades (Long in Bull, Short in Bear) from **Counter-Trend** trades (Long in Bear, Short in Bull) and **Ranging** trades.
    - Highlights the empirical edge penalty of fighting the macro bias.
-4. **Setup $\times$ Macro Trend Cross-Tabulation**:
+7. **Setup $\times$ Macro Trend Cross-Tabulation**:
    - Shows how each individual strategy behaves inside Bull, Bear, and Ranging markets.
-5. **Microstructure Market Regime Breakdown**:
+8. **Microstructure Market Regime Breakdown**:
    - Performance segmented across all 8 canonical regimes (`Orderly Trend Expansion`, `Horizontal Range Chop`, etc.).
-6. **Setup $\times$ Microstructure Regime Cross-Tabulation**:
+9. **Regime-Stratified Runner Conversion Report**:
+   - Maps each microstructure regime to its runner conversion rate (`Conv%`), Breakeven decay (`BE%`), and recommended optimal TP management policy (e.g. *50% TP1 + TP2 Runner* vs. *100% Full Exit at TP1*).
+10. **Setup $\times$ Microstructure Regime Cross-Tabulation**:
    - The primary calibration tool used to verify Section 3's `Recommended` vs `Prohibited` matrix.
-7. **Verbose Replay Log**:
-   - Bar-by-bar forensic audit listing setup name, entry/SL/TP levels, macro trend, micro regime, exit trigger, and realized $R:R$.
+11. **Verbose Replay Log**:
+   - Bar-by-bar forensic audit listing setup name, entry/SL/TP levels, macro trend, micro regime, exit trigger (`FULL_WIN`, `SCRATCH_WIN`, `FULL_LOSS`), MFE, MAE, and realized $R:R$.
 

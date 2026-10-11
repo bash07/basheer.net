@@ -20,6 +20,7 @@ from ..models import Order, Position, Trade, TradeSignal
 from .broker import Broker
 from .paper_broker import PaperBroker
 from .risk import RiskManager
+from .trailing import TrailingStopManager
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +32,11 @@ class ExecutionEngine:
         self,
         broker: Optional[Broker] = None,
         risk_manager: Optional[RiskManager] = None,
+        trailing_stop_manager: Optional[TrailingStopManager] = None,
     ) -> None:
         self.broker = broker or PaperBroker()
         self.risk_manager = risk_manager or RiskManager()
+        self.trailing_stop_manager = trailing_stop_manager or TrailingStopManager()
 
     # ── Signal Approval & Position Opening ────────────────────────────────────
 
@@ -165,9 +168,12 @@ class ExecutionEngine:
             direction=signal.direction,
             entry_price=broker_order.filled_price,
             stop_loss=signal.stop_loss,
+            initial_stop_loss=signal.stop_loss,
             take_profit=signal.tp1,
             tp2=tp2_val,
             tp1_hit=False,
+            trailing_stop_active=False,
+            peak_price=broker_order.filled_price,
             qty=qty,
             status="OPEN",
             broker=self.broker.name,
@@ -392,6 +398,16 @@ class ExecutionEngine:
                     future_bars = ltf_df.tail(1)
 
                 for _ts, row in future_bars.iterrows():
+                    # Dynamic Trailing Stop Loss (+1.5R Chandelier / EMA21 ratchet)
+                    if getattr(self, "trailing_stop_manager", None) and self.trailing_stop_manager.enabled:
+                        _new_sl, ratcheted, _msg = self.trailing_stop_manager.evaluate_bar(
+                            pos=pos,
+                            bar=row,
+                            df=ltf_df,
+                        )
+                        if ratcheted:
+                            db.flush()
+
                     hi = float(row["High"])
                     lo = float(row["Low"])
 
@@ -423,6 +439,17 @@ class ExecutionEngine:
                             close_qty = round((pos.qty or 1.0) * 0.5, 4)
                             rem_qty = round((pos.qty or 1.0) - close_qty, 4)
                             pnl_partial = (pos.take_profit - pos.entry_price) * close_qty * (1.0 if pos.direction == "long" else -1.0)
+                            close_side = "sell" if pos.direction == "long" else "buy"
+                            if self.broker.name != "paper":
+                                try:
+                                    self.broker.close_position(
+                                        ticker=pos.ticker,
+                                        side=close_side,
+                                        qty=close_qty,
+                                        exit_price=pos.take_profit,
+                                    )
+                                except Exception as exc:
+                                    logger.error("[oms.engine] Failed live partial close for %s: %s", pos.ticker, exc)
 
                             if hasattr(self.broker, "record_trade_pnl"):
                                 try:
@@ -458,9 +485,10 @@ class ExecutionEngine:
                         break
 
                     if sl_hit:
+                        close_reason = "TRAILING_SL_HIT" if getattr(pos, "trailing_stop_active", False) else "SL_HIT"
                         trade, _ = self.close_position(
                             position_id=pos.id,
-                            reason="SL_HIT",
+                            reason=close_reason,
                             exit_price=pos.stop_loss,
                             db=db,
                         )

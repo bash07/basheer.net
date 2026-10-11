@@ -86,9 +86,12 @@ class Position(Base):
     direction:   Mapped[str]   = mapped_column(String(10))   # "long" | "short"
     entry_price: Mapped[float] = mapped_column(Float)
     stop_loss:   Mapped[float] = mapped_column(Float)
+    initial_stop_loss: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     take_profit: Mapped[float] = mapped_column(Float)        # TP1
     tp2:         Mapped[Optional[float]] = mapped_column(Float, nullable=True) # TP2
     tp1_hit:     Mapped[bool]  = mapped_column(Boolean, default=False)
+    trailing_stop_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    peak_price:  Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     qty:         Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # units / contracts
 
     # "OPEN" | "CLOSED" | "CANCELLED"

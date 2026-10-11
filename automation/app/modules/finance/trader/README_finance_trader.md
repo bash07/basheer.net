@@ -188,13 +188,15 @@ Trading strategies operate across a structured 3-tier hierarchy depending on the
 - **Empirical Walk-Forward Replay Engine (`backtest.py`)**:
   - **Zero-Lookahead Multi-Timeframe Simulation**: Iterates bar-by-bar across the 3-Tier Multi-Timeframe Triad (e.g. `4h` HTF $\rightarrow$ `15m` MTF $\rightarrow$ `5m` Trigger).
   - **Unconstrained Empirical Testing Policy**: Backtesting does **not** gate or drop setups based on regime; all strategies run across all regimes to capture pure statistical benchmarks for empirical calibration.
-  - **Diagnostic Cross-Tabulation**: Reports metrics by setup, macro trend environment (`Bull`/`Bear`/`Ranging`), pro-trend vs. counter-trend alignment, and microstructure regime.
+  - **Multi-Stage TP & Scaling Simulation**: Models production OMS behavior with 50% partial scale-out at TP1, Breakeven SL ratcheting, and TP2 runner tracking. Reports **Runner Conversion Rate** (`TP1 -> TP2`), **BE Scratch Decay Rate**, and comparative **Blended Expectancy vs Single TP1 Benchmark**.
+  - **Excursion Diagnostics (MFE / MAE)**: Measures Maximum Favorable Excursion (peak $R$), Maximum Adverse Excursion (drawdown $R$), and **Take-Profit Capture Efficiency %** to detect target overreach vs money left on the table.
+  - **Diagnostic Cross-Tabulation**: Reports metrics by setup, macro trend environment (`Bull`/`Bear`/`Ranging`), pro-trend vs. counter-trend alignment, microstructure regime, and regime-stratified runner conversion.
   - **CLI Flags**:
     - `--trend <bull|bear|ranging>`: Filter results to specific macro trend conditions.
     - `--regime "<name>"`: Filter results to a specific microstructure regime.
     - `--list-regimes`: Display all 8 registered canonical regimes.
     - `--strategy "<name>"`: Isolate a single strategy across regimes.
-    - `--verbose`: Print bar-by-bar trade log with `Macro` and `Regime` tags.
+    - `--verbose`: Print bar-by-bar trade log with `Macro`, `Regime`, `ExitState`, `MFE`, and `MAE` tags.
 
 ---
 
@@ -266,31 +268,44 @@ trades
 
 ### Plan 1: Live Broker API Integration (Binance Testnet & Spot/Futures API)
 - **Goal**: Transition from simulated paper trading to real live order execution on exchanges.
+- **Status**: **Completed ✅**
 - **Technical Steps**:
-  1. Implement `BinanceBroker(Broker)` in `oms/binance_broker.py` using official Binance REST API / CCXT.
-  2. Implement HMAC-SHA256 authenticated order signing for `POST /api/v3/order` (Spot) and `/fapi/v1/order` (USD(S)-M Futures).
-  3. Map broker order status webhooks or poll order status transitions (`NEW` -> `PARTIALLY_FILLED` -> `FILLED`).
-  4. Enable configuration flag in `.trader_config.json`:
+  1. **Binance Broker (`oms/binance_broker.py`)**:
+     - Complete `BinanceBroker(Broker)` supporting Spot (`/api/v3`) and USD(S)-M Futures (`/fapi/v1`, `/fapi/v2`).
+     - Supports both Testnet (`testnet.binance.vision`, `testnet.binancefuture.com`) and Production (`api.binance.com`, `fapi.binance.com`).
+  2. **HMAC-SHA256 Signing**:
+     - Cryptographically signs authenticated endpoints with millisecond timestamps and configurable `recvWindow`.
+  3. **Order Lifecycle & Polling**:
+     - Automated transition mapping (`NEW`, `PARTIALLY_FILLED`, `FILLED`, `CANCELED`, `REJECTED`).
+     - Fast fill polling for market orders and full order query/cancellation support.
+  4. **Configuration & Broker Factory (`oms/__init__.py`)**:
+     - Dynamic instantiation via `create_broker()` with fallback to `PaperBroker`.
+     - Supports `.trader_config.json` flag and environment variables (`BINANCE_API_KEY`, `BINANCE_SECRET`, `TRADER_ACTIVE_BROKER`):
      ```json
      "oms": {
        "active_broker": "binance_testnet",
-       "binance_api_key": "ENV_VAR",
-       "binance_secret": "ENV_VAR"
+       "market_type": "spot",
+       "binance_api_key": "BINANCE_API_KEY",
+       "binance_secret": "BINANCE_SECRET"
      }
      ```
 
 ### Plan 2: Advanced Position Scaling, TP2 & Trailing Stop Management
 - **Goal**: Professional trade management with multi-stage take-profit scaling and risk mitigation.
-- **Status**: Partial exits (50% scale-out at TP1) and automated Breakeven Stop Loss adjustment are **Completed ✅**.
+- **Status**: **Completed ✅**
 - **Technical Steps**:
-  1. **Partial Exits (Completed ✅)**:
+  1. **Partial Exits & Automated Breakeven (Completed ✅)**:
      - When TP1 is hit: close $50\%$ of the position quantity, credit partial profit to account balance, and record partial trade.
      - Move `Position.stop_loss` to `entry_price` (Breakeven / Risk-Free Trade).
      - Remaining $50\%$ runs to TP2.
-  2. **Dynamic Trailing Stop Loss**:
-     - Implement Chandelier Exit or EMA21-trailing stop once trade reaches $+1.5R$.
-  3. **Schema Enhancement**:
-     - Completed: `tp1_hit` and `tp2` on `Position` model.
+  2. **Dynamic Trailing Stop Loss (`oms/trailing.py`) (Completed ✅)**:
+     - **Activation Trigger**: Unlocks once price reaches $+1.5R$ favorable excursion from initial risk.
+     - **Chandelier Exit**: Calculates stop level as $\text{Peak Price} - (k \times \text{ATR}_{14})$ (default $k=2.0$).
+     - **EMA21 Trailing Stop**: Supports trailing behind the 21-period Exponential Moving Average.
+     - **Monotonic Ratchet Guarantee**: Stop loss strictly tightens (moves upward for longs, downward for shorts) and is guaranteed to never loosen or drop below breakeven once $+1.5R$ is unlocked.
+     - **Exit Execution**: Closes position with reason `"TRAILING_SL_HIT"` locking in positive realised win/RR.
+  3. **Schema Enhancement (`models.py`) (Completed ✅)**:
+     - Completed: `tp1_hit`, `tp2`, `initial_stop_loss`, `trailing_stop_active`, and `peak_price` on `Position` model.
 
 ### Plan 3: Portfolio Correlation, Sector Exposure & Machine Learning Ranker
 - **Goal**: Prevent catastrophic portfolio drawdown from correlated assets and rank signals by probability.
