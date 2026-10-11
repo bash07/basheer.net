@@ -63,6 +63,10 @@ flowchart TD
 
 ### 3.1. Complete Regime Decision Matrix
 
+> [!NOTE]
+> **Empirical Backtesting Calibration Policy:**
+> In the backtesting engine ([`backtest.py`](file:///c:/Users/moham/Documents/basheer.net/automation/app/modules/finance/trader/backtest.py)), strategies are **never prematurely gated** by `PROHIBITED_SETUPS_BY_REGIME`. Instead, **all active strategies are executed across all market regimes and macro trends** to capture pure empirical data. The prohibitions and recommendations listed below serve as the institutional reference model that is continuously verified and fine-tuned using the backtester's post-hoc cross-tabulation reports.
+
 | # | Market Regime | Technical Signature & Indicators | Recommended Strategy Action | Prohibited / High-Risk Strategies |
 | :-: | :--- | :--- | :--- | :--- |
 | **1** | **Orderly Trend Expansion** | ADX $\ge 22.0$<br>EMAs 20/50/200 stacked slope<br>Clean Higher Highs & Higher Lows | **1. OB Retracement**<br>**2. Liquidity Sweep + FVG** | Range Liquidity Sweep *(counter-trend fades get run over)* |
@@ -225,3 +229,125 @@ Configuration resides in:
 }
 ```
 *Note: In the All-Weather profile, Gate 1 ADX, Dealing Range, and Freshness filters automatically enforce regime routing: Range Sweeps are rejected during strong trends, and OB Retracements are rejected during dead consolidations.*
+
+---
+
+## 6. Empirical Backtest Engine & Regime Verification Methodology
+
+To prevent over-fitting, confirmation bias, or flawed theoretical assumptions, the backtesting system ([`modules/finance/trader/backtest.py`](file:///c:/Users/moham/Documents/basheer.net/automation/app/modules/finance/trader/backtest.py)) is engineered around a **dual-layer market classification engine** ([`modules/finance/trader/regimes.py`](file:///c:/Users/moham/Documents/basheer.net/automation/app/modules/finance/trader/regimes.py)) and an **unconstrained empirical simulation policy**.
+
+### 6.1. Dual-Layer Market Classification Architecture
+
+Every simulated candle is tagged at runtime across two orthogonal analytical axes without lookahead bias:
+
+```mermaid
+flowchart LR
+    BAR["Bar-by-Bar Replay Loop (bar_i)"] --> EVAL["Setup Evaluation (bar_i - 1)"]
+    EVAL --> DUAL["Dual-Layer Regime Tagging"]
+    
+    subgraph Layer1["Layer 1: Macro Trend Environment"]
+        M1["Bull (Dominant Uptrend)"]
+        M2["Bear (Dominant Downtrend)"]
+        M3["Ranging (Horizontal Consolidation)"]
+    end
+    
+    subgraph Layer2["Layer 2: Microstructure Regime"]
+        R1["Orderly Trend Expansion"]
+        R2["Horizontal Range Chop"]
+        R3["High-Volatility Stop Raid"]
+        R4["Parabolic Blow-Off / Cascade"]
+        R5["Volatility Squeeze (Coil)"]
+        R6["Broadening Megaphone"]
+        R7["Creeping Drift / Melt-Up"]
+        R8["Macro News Vacuum / Shock"]
+    end
+    
+    DUAL --> Layer1
+    DUAL --> Layer2
+    Layer1 --> TRADE["SetupResult (macro_regime, regime)"]
+    Layer2 --> TRADE
+    TRADE --> REPORT["Post-Hoc Cross-Tabulation Report"]
+```
+
+1. **Macro Trend Environment (`macro_regime`)**:
+   - Classifies broad market condition into **Bull**, **Bear**, or **Ranging**.
+   - Derived via `classify_macro_regime(bias_label, adx, micro_regime)`:
+     - **Ranging**: When ADX $< 20.0$ with horizontal EMA/range structure, or during volatility squeeze/chop conditions regardless of raw directional RSI.
+     - **Bull / Bear**: Directional alignment confirmed by HTF trend structure and ADX $\ge 20.0$.
+2. **Microstructure Regime (`regime`)**:
+   - Classifies immediate local price action into the 8 institutional states defined in Section 3 (`classify_bar_regime(df, bar_i)`).
+   - Driven by ADX, ATR percentile, Bollinger-Keltner squeeze ratios, displacement candles, and EMA slope geometry.
+
+---
+
+### 6.2. The Unconstrained Empirical Testing Policy
+
+A critical flaw in standard algorithmic backtesting is premature rule gating (e.g., dropping setups when entering non-optimal regimes during backtesting). In this platform:
+
+> [!IMPORTANT]
+> **No Gating During Backtests:**
+> The backtest engine **intentionally does NOT prohibit any strategies** based on regime or macro trend during replay. All active strategies are evaluated on every eligible candle.
+> - Captures raw unconstrained performance metrics (Wins, Losses, Win Rate, Expectancy) across *every* regime.
+> - Eliminates selection bias and uncovers unexpected structural edges.
+> - Allows the `PROHIBITED_SETUPS_BY_REGIME` matrix to be empirically validated or calibrated against statistical evidence rather than intuition.
+
+---
+
+### 6.3. CLI Backtester Usage & Options
+
+The backtester is invoked via Python module execution:
+
+```powershell
+# Run full unconstrained empirical backtest (default: all strategies across all regimes)
+python -m modules.finance.trader.backtest --ticker BTC-USD --days 30
+
+# List all canonical regimes recognized by the classification engine
+python -m modules.finance.trader.backtest --list-regimes
+
+# Filter specifically to analyze performance in a Macro Trend Environment
+python -m modules.finance.trader.backtest --ticker BTC-USD --days 60 --trend bull
+python -m modules.finance.trader.backtest --ticker BTC-USD --days 60 --trend bear
+python -m modules.finance.trader.backtest --ticker BTC-USD --days 60 --trend ranging
+
+# Filter specifically to benchmark a single Microstructure Regime
+python -m modules.finance.trader.backtest --ticker BTC-USD --days 60 --regime "Horizontal Range Chop"
+python -m modules.finance.trader.backtest --ticker BTC-USD --days 60 --regime "Orderly Trend Expansion"
+python -m modules.finance.trader.backtest --ticker BTC-USD --days 60 --regime "High-Volatility Stop Raid"
+
+# Test a single strategy in isolation across all regimes
+python -m modules.finance.trader.backtest --ticker ETH-USD --days 30 --strategy "OB Retracement"
+
+# Verbose trade log output showing exact Macro & Micro regime tags for every trade
+python -m modules.finance.trader.backtest --ticker BTC-USD --days 14 --verbose
+```
+
+---
+
+### 6.4. Post-Hoc Reporting & Statistical Diagnostics
+
+Upon simulation completion, `backtest.py` generates comprehensive post-hoc diagnostic tables:
+
+1. **Overall Setup Breakdown**: Aggregate metrics per strategy (Trades, Win Rate, Avg R:R, Expectancy).
+2. **Macro Trend Breakdown**:
+   ```
+   ====================================================================================================
+   MACRO TREND BREAKDOWN (Bull / Bear / Ranging)
+   ====================================================================================================
+   Macro Trend         Total      Wins    Losses    Open      Win Rate    Avg Win RR      Expectancy
+   ----------------------------------------------------------------------------------------------------
+   Bull                   16         9         7       0        56.2%         2.52x          +0.98R
+   Bear                   18         8        10       0        44.4%         2.41x          +0.52R
+   Ranging                12         5         7       0        41.7%         1.24x          -0.07R
+   ```
+3. **Trade Direction vs Macro Trend Alignment**:
+   - Segregates **Pro-Trend** trades (Long in Bull, Short in Bear) from **Counter-Trend** trades (Long in Bear, Short in Bull) and **Ranging** trades.
+   - Highlights the empirical edge penalty of fighting the macro bias.
+4. **Setup $\times$ Macro Trend Cross-Tabulation**:
+   - Shows how each individual strategy behaves inside Bull, Bear, and Ranging markets.
+5. **Microstructure Market Regime Breakdown**:
+   - Performance segmented across all 8 canonical regimes (`Orderly Trend Expansion`, `Horizontal Range Chop`, etc.).
+6. **Setup $\times$ Microstructure Regime Cross-Tabulation**:
+   - The primary calibration tool used to verify Section 3's `Recommended` vs `Prohibited` matrix.
+7. **Verbose Replay Log**:
+   - Bar-by-bar forensic audit listing setup name, entry/SL/TP levels, macro trend, micro regime, exit trigger, and realized $R:R$.
+

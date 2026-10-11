@@ -120,6 +120,8 @@ class SetupResult:
     stop_loss:      float
     tp1:            float
     rr_ratio:       float
+    regime:         str   = ""
+    macro_regime:   str   = ""
     outcome:        str   = "OPEN"
     bars_to_result: int   = -1
     realised_rr:    float = 0.0
@@ -127,20 +129,20 @@ class SetupResult:
 
 @dataclass
 class BacktestReport:
-    ticker:       str
-    category:     str
-    mode:         str
-    date_from:    str
-    date_to:      str
-    total_bars:   int
-    setups_found: int
-    wins:         int   = 0
-    losses:       int   = 0
-    open_:        int   = 0
-    win_rate:     float = 0.0
-    avg_rr_won:   float = 0.0
-    avg_bars:     float = 0.0
-    results:      list[SetupResult] = field(default_factory=list)
+    ticker:          str
+    category:        str
+    mode:            str
+    date_from:       str
+    date_to:         str
+    total_bars:      int
+    setups_found:    int
+    wins:            int   = 0
+    losses:          int   = 0
+    open_:           int   = 0
+    win_rate:        float = 0.0
+    avg_rr_won:      float = 0.0
+    avg_bars:        float = 0.0
+    results:         list[SetupResult] = field(default_factory=list)
 
     def compute(self) -> None:
         closed = [r for r in self.results if r.outcome != "OPEN"]
@@ -169,6 +171,8 @@ def run_backtest(
     max_outcome_bars: int   = 50,
     disabled_setups:  Optional[set] = None,   # e.g. {"Liquidity Sweep + FVG"}
     style:            Optional[str] = None,   # "swing" | "intraday" | "scalping"
+    regime_filter:    Optional[str] = None,   # e.g. "Trend", "Chop", "Squeeze"
+    macro_filter:     Optional[str] = None,   # e.g. "bull", "bear", "ranging"
 ) -> BacktestReport:
     """Run bar-by-bar replay backtest across 3-tier multi-timeframe matrix."""
     from modules.finance.trader.schemas import scan_mode_for, timeframe_triad_for
@@ -213,6 +217,12 @@ def run_backtest(
         print(f"Strategy Backtest: {ticker} | {mode.upper()} style")
         print(f"Period:  {date_from}  to  {date_to}")
         print(f"HTF (Where): {htf_tf.upper()}  |  MTF (When): {mtf_tf.upper()}  |  Trigger (How): {trigger_tf.upper()}")
+        if macro_filter:
+            print(f"Macro Filter : '{macro_filter.title()}' (evaluating all active strategies in this macro trend)")
+        if regime_filter:
+            print(f"Regime Filter: '{regime_filter}' (testing all active strategies in this regime)")
+        if not macro_filter and not regime_filter:
+            print("Regime Mode  : All macro trends (Bull/Bear/Ranging) & regimes tested (post-hoc breakdown)")
         print("=" * 60)
 
         from modules.finance.trader.setups import ALL_SETUP_NAMES
@@ -269,39 +279,22 @@ def run_backtest(
         print(f"Trigger bars total: {n} | replay window: {total_replay_bars} | step: {step}")
 
         # ── Pre-compute static indicator series on the FULL dataset (Issue 6 fix) ──
-        print("  Pre-computing indicator series...")
-        import pandas as pd
+        print("  Pre-computing indicator series & market regimes...")
+        from modules.finance.trader.regimes import (
+            precompute_regime_indicators,
+            classify_bar_regime,
+            classify_macro_regime,
+        )
 
         _close = full_trigger["Close"]
-        _high  = full_trigger["High"]
-        _low   = full_trigger["Low"]
-
-        # RSI-14 (Wilder EWM)
-        _delta    = _close.diff()
-        _gain     = _delta.where(_delta > 0, 0.0)
-        _loss     = (-_delta).where(_delta < 0, 0.0)
-        _ag       = _gain.ewm(com=13, min_periods=14).mean()
-        _al       = _loss.ewm(com=13, min_periods=14).mean()
-        _rs       = _ag / _al.replace(0, float("inf"))
-        _rsi14    = (100 - 100 / (1 + _rs)).rename("rsi_14")
 
         # EMA 8/21 (used by EMA Pullback strategy)
         _ema8     = _close.ewm(span=8,  adjust=False).mean().rename("ema_8")
         _ema21    = _close.ewm(span=21, adjust=False).mean().rename("ema_21")
 
-        # ATR-14 True Range
-        _tr1 = _high - _low
-        _tr2 = (_high - _close.shift(1)).abs()
-        _tr3 = (_low  - _close.shift(1)).abs()
-        _tr  = pd.concat([_tr1, _tr2, _tr3], axis=1).max(axis=1)
-        _atr14 = _tr.rolling(14).mean().rename("atr_14")
-
-        # Attach precomputed columns to the full_trigger DataFrame
-        full_trigger = full_trigger.copy()
-        full_trigger["rsi_14"] = _rsi14
+        full_trigger = precompute_regime_indicators(full_trigger)
         full_trigger["ema_8"]  = _ema8
         full_trigger["ema_21"] = _ema21
-        full_trigger["atr_14"] = _atr14
         print("  Indicator pre-computation done. Starting replay...")
 
         report = BacktestReport(
@@ -357,6 +350,22 @@ def run_backtest(
                 if setup_filter and setup.setup_name != setup_filter:
                     continue
 
+                # Classify prevailing market regime on trigger candle
+                regime_info = classify_bar_regime(full_trigger, bar_i=bar_i - 1)
+                active_regime = regime_info.name
+                macro_reg = classify_macro_regime(setup.bias.bias, adx=regime_info.adx, micro_regime=active_regime)
+
+                # Filter by macro trend if requested (e.g. 'bull', 'bear', 'ranging')
+                if macro_filter and macro_filter.lower() != macro_reg.lower():
+                    continue
+
+                # Filter by micro regime name/code if requested (tests all strategies in this regime)
+                if regime_filter and (
+                    regime_filter.lower() not in active_regime.lower()
+                    and regime_filter.lower() not in regime_info.code.lower()
+                ):
+                    continue
+
                 dedup_key = f"{setup.setup_name}|{setup.direction}"
                 last_bar  = dedup_last.get(dedup_key, -9999)
                 if bar_i - last_bar < 24:
@@ -381,6 +390,8 @@ def run_backtest(
                     stop_loss=round(setup.stop_loss, 4),
                     tp1=round(setup.tp1, 4),
                     rr_ratio=round(setup.rr_ratio, 2),
+                    regime=active_regime,
+                    macro_regime=macro_reg,
                     outcome=outcome,
                     bars_to_result=bars_to,
                     realised_rr=round(realised_rr, 2),
@@ -396,8 +407,6 @@ def run_backtest(
 
         if disabled_setups:
             print(f"  Disabled during run: {', '.join(sorted(disabled_setups))}")
-
-
 
 
 def _empty_report(ticker, category, mode, date_from, date_to) -> BacktestReport:
@@ -612,6 +621,101 @@ def print_report(report: BacktestReport, verbose: bool = False) -> None:
         avg_rr   = sum(r.realised_rr for r in won) / len(won) if won else 0.0
         print(f"  {name:<30} {len(rows):>4} {wins:>4} {wr_pct:>5.1f}% {avg_rr:>6.2f}x")
 
+    # By Macro Trend (Bull / Bear / Ranging)
+    print(f"\n  {'Macro Trend':<24} {'N':>4} {'W':>4} {'L':>4} {'WR%':>6} {'AvgRR':>7} {'Expectancy':>11}")
+    print(f"  {sep}")
+    by_macro: dict[str, list] = {}
+    for r in report.results:
+        by_macro.setdefault(r.macro_regime or "Unclassified", []).append(r)
+    for m_name in ["Bull", "Bear", "Ranging"]:
+        rows = by_macro.get(m_name, [])
+        if not rows:
+            continue
+        wins     = sum(1 for r in rows if r.outcome == "WIN")
+        losses   = sum(1 for r in rows if r.outcome == "LOSS")
+        closed_n = wins + losses
+        wr_pct   = (wins / closed_n * 100) if closed_n else 0.0
+        won      = [r for r in rows if r.outcome == "WIN"]
+        avg_rr   = sum(r.realised_rr for r in won) / len(won) if won else 0.0
+        wr_ratio = wr_pct / 100.0
+        exp_val  = (wr_ratio * avg_rr) - ((1.0 - wr_ratio) * 1.0) if closed_n else 0.0
+        exp_str  = f"{exp_val:+.2f}R" if closed_n else "N/A"
+        print(f"  {m_name:<24} {len(rows):>4} {wins:>4} {losses:>4} {wr_pct:>5.1f}% {avg_rr:>6.2f}x {exp_str:>11}")
+
+    # Directional Alignment: Long vs Short in Bull / Bear / Ranging
+    print(f"\n  Trade Direction vs Macro Trend (Pro-Trend vs Counter-Trend Alignment):")
+    print(f"  {sep}")
+    for dir_label in ["long", "short"]:
+        dir_rows = [r for r in report.results if r.direction == dir_label]
+        if not dir_rows:
+            continue
+        print(f"  • {dir_label.upper()} Trades (Total: {len(dir_rows)}):")
+        for m_name in ["Bull", "Bear", "Ranging"]:
+            matching = [r for r in dir_rows if r.macro_regime == m_name]
+            if not matching:
+                continue
+            w = sum(1 for r in matching if r.outcome == "WIN")
+            c = sum(1 for r in matching if r.outcome != "OPEN")
+            wr = f"{w/c*100:.1f}%" if c else "0.0%"
+            won_m = [r for r in matching if r.outcome == "WIN"]
+            avg_rr_m = sum(r.realised_rr for r in won_m) / len(won_m) if won_m else 0.0
+            alignment = " [Pro-Trend]" if (dir_label == "long" and m_name == "Bull") or (dir_label == "short" and m_name == "Bear") else (" [Counter-Trend]" if (dir_label == "long" and m_name == "Bear") or (dir_label == "short" and m_name == "Bull") else "")
+            print(f"      - {m_name:<10} n={len(matching):2d}  wins={w:2d}  WR={wr:<6} (AvgRR: {avg_rr_m:.2f}x){alignment}")
+
+    # Cross-Tab: Setup vs Macro Trend
+    if len(by_setup) > 1 or len(by_macro) > 1:
+        print(f"\n  Cross-Tab: Setup Performance by Macro Trend:")
+        print(f"  {sep}")
+        for sname in sorted(by_setup.keys()):
+            s_rows = by_setup[sname]
+            print(f"  • {sname}:")
+            for m_name in ["Bull", "Bear", "Ranging"]:
+                matching = [r for r in s_rows if r.macro_regime == m_name]
+                if not matching:
+                    continue
+                w = sum(1 for r in matching if r.outcome == "WIN")
+                c = sum(1 for r in matching if r.outcome != "OPEN")
+                wr = f"{w/c*100:.1f}%" if c else "0.0%"
+                won_m = [r for r in matching if r.outcome == "WIN"]
+                avg_rr_m = sum(r.realised_rr for r in won_m) / len(won_m) if won_m else 0.0
+                print(f"      - {m_name:<10} n={len(matching):2d}  wins={w:2d}  WR={wr:<6} (AvgRR: {avg_rr_m:.2f}x)")
+
+    # By Market Regime (STRATEGY_PLAYBOOK.md Section 3)
+    print(f"\n  {'Market Regime (Micro)':<32} {'N':>4} {'W':>4} {'L':>4} {'WR%':>6} {'AvgRR':>7} {'Expectancy':>11}")
+    print(f"  {sep}")
+    by_regime: dict[str, list] = {}
+    for r in report.results:
+        by_regime.setdefault(r.regime or "Unclassified", []).append(r)
+    for reg_name, rows in sorted(by_regime.items(), key=lambda x: -len(x[1])):
+        wins     = sum(1 for r in rows if r.outcome == "WIN")
+        losses   = sum(1 for r in rows if r.outcome == "LOSS")
+        closed_n = wins + losses
+        wr_pct   = (wins / closed_n * 100) if closed_n else 0.0
+        won      = [r for r in rows if r.outcome == "WIN"]
+        avg_rr   = sum(r.realised_rr for r in won) / len(won) if won else 0.0
+        wr_ratio = wr_pct / 100.0
+        exp_val  = (wr_ratio * avg_rr) - ((1.0 - wr_ratio) * 1.0) if closed_n else 0.0
+        exp_str  = f"{exp_val:+.2f}R" if closed_n else "N/A"
+        print(f"  {reg_name:<32} {len(rows):>4} {wins:>4} {losses:>4} {wr_pct:>5.1f}% {avg_rr:>6.2f}x {exp_str:>11}")
+
+    # Cross-Tab: Setup vs Market Regime
+    if len(by_setup) > 1 or len(by_regime) > 1:
+        print(f"\n  Cross-Tab: Setup Performance by Microstructure Regime:")
+        print(f"  {sep}")
+        for sname in sorted(by_setup.keys()):
+            s_rows = by_setup[sname]
+            print(f"  • {sname}:")
+            for rname in sorted(by_regime.keys()):
+                matching = [r for r in s_rows if r.regime == rname]
+                if not matching:
+                    continue
+                w = sum(1 for r in matching if r.outcome == "WIN")
+                c = sum(1 for r in matching if r.outcome != "OPEN")
+                wr = f"{w/c*100:.1f}%" if c else "0.0%"
+                won_m = [r for r in matching if r.outcome == "WIN"]
+                avg_rr_m = sum(r.realised_rr for r in won_m) / len(won_m) if won_m else 0.0
+                print(f"      - {rname:<30} n={len(matching):2d}  wins={w:2d}  WR={wr:<6} (AvgRR: {avg_rr_m:.2f}x)")
+
     # By bias
     print(f"\n  {'Bias':<22} {'N':>4} {'W':>4} {'WR%':>6}")
     by_bias: dict[str, list] = {}
@@ -640,13 +744,14 @@ def print_report(report: BacktestReport, verbose: bool = False) -> None:
 
     if verbose and report.results:
         print(f"\n  Individual trades (last 30):")
-        print(f"  {'Date':<18} {'Setup':<26} {'Dir':<6} {'Sc':>4} {'RR':>5} {'Result':<7} {'Bars':>5}")
+        print(f"  {'Date':<18} {'Setup':<22} {'Macro':<8} {'Regime':<24} {'Dir':<5} {'Sc':>4} {'RR':>5} {'Res':<5} {'Bars':>5}")
         print(f"  {sep}")
         for r in report.results[-30:]:
             tag = {"WIN": "[W]", "LOSS": "[L]", "OPEN": "[?]"}.get(r.outcome, "[ ]")
+            reg_short = (r.regime[:21] + "..") if len(r.regime) > 23 else r.regime
             print(
-                f"  {r.fired_at:<18} {r.setup_name:<26} {r.direction:<6} "
-                f"{r.conf_score:>4.1f} {r.rr_ratio:>5.1f}x {tag} {r.outcome:<4} {r.bars_to_result:>5}"
+                f"  {r.fired_at:<18} {r.setup_name:<22} {r.macro_regime:<8} {reg_short:<24} {r.direction:<5} "
+                f"{r.conf_score:>4.1f} {r.rr_ratio:>5.1f}x {tag} {r.outcome:<3} {r.bars_to_result:>5}"
             )
 
     print("=" * 60 + "\n")
@@ -699,6 +804,13 @@ def main() -> None:
                         ))
     parser.add_argument("--list-setups", action="store_true",
                         help="Print all available setup names and exit")
+    parser.add_argument("--trend", "--macro-regime", dest="macro_trend", default=None,
+                        choices=["bull", "bear", "ranging"],
+                        help="Filter backtest to evaluate all strategies within a specific macro trend: bull | bear | ranging")
+    parser.add_argument("--regime",    default=None,
+                        help="Filter backtest to evaluate all strategies within a specific market regime")
+    parser.add_argument("--list-regimes", action="store_true",
+                        help="Print all market regimes and macro trends, then exit")
     parser.add_argument("--style",     default=None,
                         choices=["swing", "intraday", "scalping"],
                         help="Override trading style: swing | intraday | scalping (default: inferred from category)")
@@ -712,6 +824,22 @@ def main() -> None:
         print("Available setups:")
         for name in ALL_SETUP_NAMES:
             print(f"  - {name}")
+        sys.exit(0)
+
+    # Handle --list-regimes before full parse
+    if "--list-regimes" in sys.argv:
+        from modules.finance.trader.regimes import ALL_REGIME_NAMES, ALL_MACRO_REGIMES
+        print("\nMacro Trend Environments:")
+        print("=" * 60)
+        for i, m in enumerate(ALL_MACRO_REGIMES, 1):
+            print(f"  {i}. {m} (filter via --trend {m.lower()})")
+        print("\nMicrostructure Market Regimes (from STRATEGY_PLAYBOOK.md):")
+        print("=" * 60)
+        for i, name in enumerate(ALL_REGIME_NAMES, 1):
+            print(f"  {i}. {name}")
+        print("=" * 60)
+        print("Note: In backtesting, all strategies are tested across all regimes without prohibition.")
+        print("Empirical performance data will be used to calibrate router rules later.\n")
         sys.exit(0)
 
     args = parser.parse_args()
@@ -749,6 +877,8 @@ def main() -> None:
         max_outcome_bars=args.max_bars,
         disabled_setups=set(args.disable) if args.disable else None,
         style=args.style,
+        regime_filter=args.regime,
+        macro_filter=args.macro_trend,
     )
 
     print_report(report, verbose=args.verbose)

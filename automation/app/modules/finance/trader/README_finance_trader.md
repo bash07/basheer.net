@@ -40,9 +40,11 @@ flowchart TD
         BIAS["HTF Bias Engine (bias.py)\nRSI Regime / Hidden Div / MACD / EMA / Composite"]
         SCAN["ICT/SMC Detector (scanner.py)\nMarket Structure, BOS/CHoCH, Order Blocks, FVG, EQH/EQL"]
         CONF["Confluence Engine (confluence.py)\nFRVP Volume Profile (POC/VAH/VAL) + Multi-Timeframe S/R"]
+        REGIME["Regime Classifier (regimes.py)\n8 Canonical Regimes + Bull/Bear/Ranging Macro"]
         IND --> BIAS
         IND --> SCAN
         IND --> CONF
+        IND --> REGIME
     end
 
     subgraph StrategyLayer["Strategy Plugin Architecture (strategies/)"]
@@ -168,6 +170,31 @@ Trading strategies operate across a structured 3-tier hierarchy depending on the
   - Evaluates candle Highs/Lows against TP1/SL every 30 minutes in the background loop.
   - **Partial Take-Profit (TP1) & Breakeven SL**: Scales out 50% of position size upon hitting TP1 and shifts `stop_loss` to `entry_price` to lock in a risk-free trade.
   - Conservative ambiguous candle policy: defaults to SL-first if a candle touches both TP and SL.
+
+### 3.6. Market Regime Classification & Empirical Backtesting (`regimes.py` & `backtest.py`)
+
+- **Regime Classification Engine (`regimes.py`)**:
+  - **Microstructure Regimes**: 8 canonical institutional states classified on each candle without lookahead (`classify_bar_regime`):
+    1. `Orderly Trend Expansion`
+    2. `Horizontal Range Chop`
+    3. `High-Volatility Stop Raid`
+    4. `Parabolic Blow-Off / Cascade`
+    5. `Volatility Squeeze (Coil)`
+    6. `Broadening Megaphone`
+    7. `Creeping Drift / Melt-Up`
+    8. `Macro News Vacuum / Shock`
+  - **Macro Trend Environments**: Classifies broader market trend into `Bull`, `Bear`, or `Ranging` (`classify_macro_regime`) using ADX, HTF trend structure, and volatility compression.
+  - **Vectorized Precomputation**: `precompute_regime_indicators(df)` pre-calculates ADX, ATR percentiles, Bollinger Bands, and Keltner Channels to ensure fast backtesting and live execution.
+- **Empirical Walk-Forward Replay Engine (`backtest.py`)**:
+  - **Zero-Lookahead Multi-Timeframe Simulation**: Iterates bar-by-bar across the 3-Tier Multi-Timeframe Triad (e.g. `4h` HTF $\rightarrow$ `15m` MTF $\rightarrow$ `5m` Trigger).
+  - **Unconstrained Empirical Testing Policy**: Backtesting does **not** gate or drop setups based on regime; all strategies run across all regimes to capture pure statistical benchmarks for empirical calibration.
+  - **Diagnostic Cross-Tabulation**: Reports metrics by setup, macro trend environment (`Bull`/`Bear`/`Ranging`), pro-trend vs. counter-trend alignment, and microstructure regime.
+  - **CLI Flags**:
+    - `--trend <bull|bear|ranging>`: Filter results to specific macro trend conditions.
+    - `--regime "<name>"`: Filter results to a specific microstructure regime.
+    - `--list-regimes`: Display all 8 registered canonical regimes.
+    - `--strategy "<name>"`: Isolate a single strategy across regimes.
+    - `--verbose`: Print bar-by-bar trade log with `Macro` and `Regime` tags.
 
 ---
 
