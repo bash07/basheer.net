@@ -225,6 +225,7 @@ def _load_builtins() -> None:
     _modules = [
         "rsi", "ema", "atr", "structure", "volume_profile", "bias_indicator",
         "macd", "adx", "bollinger", "stochastic", "sma", "accumulation_distribution",
+        "point_and_figure",
     ]
     for mod_name in _modules:
         try:

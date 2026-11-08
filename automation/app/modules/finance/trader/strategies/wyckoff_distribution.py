@@ -36,6 +36,7 @@ class WyckoffDistributionStrategy(BaseStrategy):
 
     required_indicators = [
         "accum_dist",
+        "point_and_figure",
         "atr_14",
         "rsi_14",
         "sr_levels",
@@ -104,10 +105,17 @@ class WyckoffDistributionStrategy(BaseStrategy):
         if risk <= 0:
             return None
 
-        # TP1: Range low or 1.8R
-        tp1 = min(entry_mid - (1.8 * risk), range_low)
-        # TP2: 2.8R expansion markdown target
-        tp2 = entry_mid - (2.8 * risk)
+        # ── P&F Cause & Effect Take Profit Projections (Wyckoff 2nd Law) ────
+        pnf = ctx.indicators.get("point_and_figure")
+        if pnf and pnf.projected_short_conservative < entry_mid:
+            # TP1: Conservative Cause projection (UTAD to SOW) or range floor
+            tp1 = min(entry_mid - (1.5 * risk), pnf.projected_short_conservative)
+            # TP2: Full Ceiling Cause projection (Phase A-E Markdown)
+            tp2 = min(tp1 - (0.5 * risk), pnf.projected_short_full)
+        else:
+            # Fallback to structural range floor + 2.8R markdown
+            tp1 = min(entry_mid - (1.8 * risk), range_low)
+            tp2 = entry_mid - (2.8 * risk)
 
         rr_ratio = abs(tp1 - entry_mid) / risk
         if rr_ratio < _MIN_RR:

@@ -873,11 +873,13 @@ async def _wyckoff_single(ticker: str) -> str:
         df_htf = df_trigger
 
     initial_cache = {"_mode": mode, "_category": category}
-    indicators = compute_indicators(["accum_dist", "rsi_14", "atr_14"], df_trigger, df_htf, initial_cache)
+    indicators = compute_indicators(["accum_dist", "rsi_14", "atr_14", "point_and_figure"], df_trigger, df_htf, initial_cache)
 
     ad = indicators.get("accum_dist")
     if ad is None:
         return f"❌ Failed to calculate Wyckoff metrics for `{ticker}`\\."
+
+    pnf = indicators.get("point_and_figure")
 
     current_price = float(df_trigger["Close"].iloc[-1])
     atr_val = indicators.get("atr_14") or 1e-4
@@ -938,8 +940,30 @@ async def _wyckoff_single(ticker: str) -> str:
         f"  • UTAD Upthrust:    {utad_status}",
         f"  • Absorption Div:   {abs_div_status}",
         f"  • Exhaustion Div:   {exh_div_status}",
-        "━━━━━━━━━━━━━━━━━━━━",
     ]
+
+    if pnf and pnf.horizontal_count > 0:
+        lines.append("")
+        lines.append("📐 *Cause & Effect (P&F 3-Box Projections):*")
+        lines.append(f"  • Base Width:       `{pnf.horizontal_count}` columns (Box: `{pnf.box_size:,.2f}`)")
+        if ad.state == "distribution":
+            t_cons = pnf.projected_short_conservative
+            t_full = pnf.projected_short_full
+            cons_pct = (t_cons - current_price) / current_price * 100
+            full_pct = (t_full - current_price) / current_price * 100
+            lines.append(f"  • Cause Value:      `-{pnf.cause_pts:,.2f}` pts markdown")
+            lines.append(f"  • Target 1 (Cons):  `{t_cons:,.4f}` ({cons_pct:+.2f}%)")
+            lines.append(f"  • Target 2 (Full):  `{t_full:,.4f}` ({full_pct:+.2f}%)")
+        else:
+            t_cons = pnf.projected_long_conservative
+            t_full = pnf.projected_long_full
+            cons_pct = (t_cons - current_price) / current_price * 100
+            full_pct = (t_full - current_price) / current_price * 100
+            lines.append(f"  • Cause Value:      `+{pnf.cause_pts:,.2f}` pts markup")
+            lines.append(f"  • Target 1 (Cons):  `{t_cons:,.4f}` ({cons_pct:+.2f}%)")
+            lines.append(f"  • Target 2 (Full):  `{t_full:,.4f}` ({full_pct:+.2f}%)")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
     return "\n".join(lines)
 
 
@@ -970,33 +994,34 @@ async def _wyckoff_overview() -> str:
             if df_trigger is None or df_trigger.empty or len(df_trigger) < 15:
                 return entry.symbol, None
             initial_cache = {"_mode": mode, "_category": entry.category}
-            inds = compute_indicators(["accum_dist"], df_trigger, df_trigger, initial_cache)
-            return entry.symbol, inds.get("accum_dist")
+            inds = compute_indicators(["accum_dist", "point_and_figure"], df_trigger, df_trigger, initial_cache)
+            return entry.symbol, inds.get("accum_dist"), inds.get("point_and_figure")
         except Exception as e:
             logger.warning("[trader] Wyckoff overview failed for %s: %s", entry.symbol, e)
-            return entry.symbol, None
+            return entry.symbol, None, None
 
     results = await asyncio.gather(*[_eval_entry(e) for e in entries], return_exceptions=True)
 
     lines = [
         "🏛️ *Wyckoff Market Diagnostics Overview*\n",
         "```text",
-        f"{'Ticker':<12} {'State':<8} {'Score':>7} {'Squeeze':<7} {'Phase C/D':<10}",
-        "-" * 48,
+        f"{'Ticker':<10} {'State':<7} {'Score':>5} {'Sq':<3} {'Cause Pts':>10} {'Phase C/D':<9}",
+        "-" * 50,
     ]
 
     has_data = False
     for res in results:
         if isinstance(res, Exception) or not isinstance(res, tuple):
             continue
-        ticker, ad = res
+        ticker, ad, pnf = res
         if ad is None:
             continue
         has_data = True
-        ticker_disp = ticker[:11]
-        state_disp = "ACCUM" if ad.state == "accumulation" else "DIST" if ad.state == "distribution" else "NEUTRAL"
+        ticker_disp = ticker[:9]
+        state_disp = "ACCUM" if ad.state == "accumulation" else "DIST" if ad.state == "distribution" else "NEUT"
         score_disp = f"{ad.score:+.0f}"
-        squeeze_disp = "YES" if ad.is_squeeze else "NO"
+        squeeze_disp = "Y" if ad.is_squeeze else "N"
+        cause_disp = f"{pnf.cause_pts:+.1f}" if (pnf and pnf.cause_pts > 0) else "—"
         if ad.spring_detected:
             phase_disp = "Spring"
         elif ad.upthrust_detected:
@@ -1007,7 +1032,7 @@ async def _wyckoff_overview() -> str:
             phase_disp = "ExhDiv"
         else:
             phase_disp = "None"
-        lines.append(f"{ticker_disp:<12} {state_disp:<8} {score_disp:>7} {squeeze_disp:<7} {phase_disp:<10}")
+        lines.append(f"{ticker_disp:<10} {state_disp:<7} {score_disp:>5} {squeeze_disp:<3} {cause_disp:>10} {phase_disp:<9}")
 
     if not has_data:
         return "⚠️ Could not retrieve sufficient market data for watchlist tickers\\."

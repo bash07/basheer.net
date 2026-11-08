@@ -36,6 +36,7 @@ class WyckoffAccumulationStrategy(BaseStrategy):
 
     required_indicators = [
         "accum_dist",
+        "point_and_figure",
         "atr_14",
         "rsi_14",
         "sr_levels",
@@ -104,10 +105,17 @@ class WyckoffAccumulationStrategy(BaseStrategy):
         if risk <= 0:
             return None
 
-        # TP1: Range high or 1.8R
-        tp1 = max(entry_mid + (1.8 * risk), range_high)
-        # TP2: 2.8R expansion markup target
-        tp2 = entry_mid + (2.8 * risk)
+        # ── P&F Cause & Effect Take Profit Projections (Wyckoff 2nd Law) ────
+        pnf = ctx.indicators.get("point_and_figure")
+        if pnf and pnf.projected_long_conservative > entry_mid:
+            # TP1: Conservative Cause projection (Spring to SOS) or range ceiling
+            tp1 = max(entry_mid + (1.5 * risk), pnf.projected_long_conservative)
+            # TP2: Full Base Cause projection (Phase A-E Markup)
+            tp2 = max(tp1 + (0.5 * risk), pnf.projected_long_full)
+        else:
+            # Fallback to structural range ceiling + 2.8R expansion
+            tp1 = max(entry_mid + (1.8 * risk), range_high)
+            tp2 = entry_mid + (2.8 * risk)
 
         rr_ratio = abs(tp1 - entry_mid) / risk
         if rr_ratio < _MIN_RR:
