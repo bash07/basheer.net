@@ -147,6 +147,13 @@ async def _scan_single(ticker: str) -> str:
     regime_info = classify_bar_regime(regime_df)
     macro_regime = classify_macro_regime(bias.bias, regime_info.adx, regime_info.name)
 
+    # Check if entry has allowed strategy types specified (e.g. from screener)
+    allowed_strategies = (
+        [st.strip() for st in entry.strategy_types.split(",") if st.strip()]
+        if getattr(entry, "strategy_types", None)
+        else None
+    )
+
     # Evaluate 3-tier triad setups
     setups = check_all(
         ticker,
@@ -156,6 +163,7 @@ async def _scan_single(ticker: str) -> str:
         df_mtf=df_mtf,
         df_trigger=df_trigger,
         mode=mode,
+        allowed_setups=allowed_strategies,
     )
 
     regime_emoji = {

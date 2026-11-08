@@ -180,3 +180,36 @@ async def test_trader_scan_all_tickers_passes_strategy_types(clean_db):
                     assert mock_check_all.called
                     _, kwargs = mock_check_all.call_args
                     assert kwargs.get("allowed_setups") == ["OBRetracement", "DisplacementFVG"]
+
+
+@pytest.mark.asyncio
+async def test_scan_single_respects_strategy_types(clean_db):
+    """Verify _scan_single extracts entry.strategy_types and passes to check_all."""
+    from modules.finance.trader.commands import _scan_single
+
+    entry = WatchlistEntry(
+        symbol="TECHM.NS",
+        display_name="Tech Mahindra",
+        category="indian_stock",
+        source="screen_weekly_ta",
+        strategy_types="CreepingDrift,DisplacementFVG",
+    )
+    clean_db.add(entry)
+    clean_db.commit()
+
+    dates = pd.date_range("2026-01-01", periods=50, freq="1D")
+    mock_df = pd.DataFrame(
+        {"Open": [100.0] * 50, "High": [102.0] * 50, "Low": [98.0] * 50, "Close": [100.0] * 50, "Volume": [50000.0] * 50},
+        index=dates,
+    )
+
+    mock_provider = MagicMock()
+    mock_provider.fetch_ohlcv.return_value = mock_df
+
+    with patch("modules.finance.trader.data.get_provider", return_value=mock_provider):
+        with patch("modules.finance.trader.setups.check_all", return_value=[]) as mock_check_all:
+            with patch("modules.finance.trader.jobs._update_open_trades_for_ticker"):
+                await _scan_single("TECHM.NS")
+                assert mock_check_all.called
+                _, kwargs = mock_check_all.call_args
+                assert kwargs.get("allowed_setups") == ["CreepingDrift", "DisplacementFVG"]
