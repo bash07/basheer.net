@@ -44,9 +44,15 @@ async def scan_all_tickers() -> None:
         all_entries = db.execute(select(WatchlistEntry)).scalars().all()
 
     active = [e for e in all_entries if is_market_open(e.category)]
+    closed_categories = {e.category for e in all_entries if not is_market_open(e.category)}
     if not active:
         logger.debug("[trader] scan_all_tickers: no open markets right now")
-        return
+        return {
+            "scanned": 0,
+            "total": len(all_entries),
+            "new_setups": 0,
+            "closed_categories": closed_categories,
+        }
 
     logger.info("[trader] scan_all_tickers: checking %d tickers", len(active))
 
@@ -74,33 +80,45 @@ async def scan_all_tickers() -> None:
     )
 
     # 4. Evaluate setups for each ticker
-    new_setups    = []   # list of (TradeSetup, ltf_df)
+    new_setups    = []   # list of (TradeSetup, trigger_df)
     closed_trades = []   # list of newly closed Trade records
 
     with get_db() as db:
         for entry in swing_tickers + intraday_tickers:
-            ohlcv_map = swing_ohlcv if scan_mode_for(entry.category) == "swing" else intraday_ohlcv
+            mode = scan_mode_for(entry.category)
+            ohlcv_map = swing_ohlcv if mode == "swing" else intraday_ohlcv
             htf_df = ohlcv_map.get(f"{entry.symbol}:htf")
-            ltf_df = ohlcv_map.get(f"{entry.symbol}:ltf")
+            mtf_df = ohlcv_map.get(f"{entry.symbol}:mtf")
+            trigger_df = ohlcv_map.get(f"{entry.symbol}:trigger")
+            if trigger_df is None:
+                trigger_df = ohlcv_map.get(f"{entry.symbol}:ltf")
 
-            if htf_df is None or ltf_df is None or htf_df.empty or ltf_df.empty:
+            if htf_df is None or trigger_df is None or htf_df.empty or trigger_df.empty:
                 logger.debug("[trader] %s: missing OHLCV data, skipping", entry.symbol)
                 continue
 
             # Update live outcome of previously fired setups
-            _update_open_trades_for_ticker(entry.symbol, ltf_df, db)
+            _update_open_trades_for_ticker(entry.symbol, trigger_df, db)
 
             # Evaluate open OMS positions (TP/SL triggers)
             try:
                 from .oms import update_open_positions_for_ticker
-                just_closed = update_open_positions_for_ticker(entry.symbol, ltf_df, db)
+                just_closed = update_open_positions_for_ticker(entry.symbol, trigger_df, db)
                 if just_closed:
                     closed_trades.extend(just_closed)
             except Exception as e:
                 logger.warning("[trader] OMS position update failed for %s: %s", entry.symbol, e)
 
             try:
-                setups = check_all(entry.symbol, entry.category, htf_df, ltf_df)
+                setups = check_all(
+                    entry.symbol,
+                    entry.category,
+                    htf_df,
+                    trigger_df,
+                    df_mtf=mtf_df,
+                    df_trigger=trigger_df,
+                    mode=mode,
+                )
             except Exception as e:
                 logger.warning("[trader] check_all failed for %s: %s", entry.symbol, e)
                 continue
@@ -110,7 +128,7 @@ async def scan_all_tickers() -> None:
                 if key in dedup_keys:
                     logger.debug("[trader] %s: dedup hit for %s — skipping", entry.symbol, setup.setup_name)
                     continue
-                new_setups.append((setup, ltf_df))   # keep ltf_df for chart generation
+                new_setups.append((setup, trigger_df))   # keep trigger_df for chart generation
                 dedup_keys.add(key)  # prevent intra-scan duplicates
         
         db.commit() # commit outcome & OMS position updates
@@ -132,7 +150,12 @@ async def scan_all_tickers() -> None:
 
     if not new_setups:
         logger.debug("[trader] scan_all_tickers: no new setups this cycle")
-        return
+        return {
+            "scanned": len(active),
+            "total": len(all_entries),
+            "new_setups": 0,
+            "closed_categories": closed_categories,
+        }
 
     logger.info("[trader] Firing %d new setup alert(s)", len(new_setups))
 
@@ -216,22 +239,33 @@ async def scan_all_tickers() -> None:
         except Exception as e:
             logger.error("[trader] Failed to notify for %s: %s", setup.ticker, e)
 
+    return {
+        "scanned": len(active),
+        "total": len(all_entries),
+        "new_setups": len(new_setups),
+        "closed_categories": closed_categories,
+    }
+
 
 # ── OHLCV fetching ────────────────────────────────────────────────────────────
 
 def _fetch_all_ohlcv(entries: list, mode: str) -> dict:
-    """Fetch HTF + LTF OHLCV for all entries using category-aware DataProviders.
+    """Fetch HTF + MTF + Trigger OHLCV for all entries using category-aware DataProviders.
 
     Returns:
-        Dict with keys "{symbol}:htf" and "{symbol}:ltf" → DataFrame
+        Dict with keys:
+          "{symbol}:htf"     → DataFrame
+          "{symbol}:mtf"     → DataFrame
+          "{symbol}:trigger" → DataFrame
+          "{symbol}:ltf"     → DataFrame (backward-compatible alias for trigger)
     """
     from .data import get_provider
-    from .schemas import timeframes_for
+    from .schemas import timeframe_triad_for
 
     if not entries:
         return {}
 
-    htf_tf, ltf_tf, _ = timeframes_for(mode)
+    triad = timeframe_triad_for(mode)
 
     # Group symbols by category so appropriate provider is used (e.g. Binance for crypto)
     by_category: dict[str, list[str]] = {}
@@ -241,14 +275,18 @@ def _fetch_all_ohlcv(entries: list, mode: str) -> dict:
     result = {}
     for cat, symbols in by_category.items():
         provider = get_provider(cat)
-        htf_map = provider.fetch_ohlcv_batch(symbols, htf_tf)
-        ltf_map = provider.fetch_ohlcv_batch(symbols, ltf_tf)
+        htf_map = provider.fetch_ohlcv_batch(symbols, triad.htf)
+        mtf_map = provider.fetch_ohlcv_batch(symbols, triad.mtf)
+        trigger_map = provider.fetch_ohlcv_batch(symbols, triad.trigger)
 
         for sym in symbols:
             if sym in htf_map:
                 result[f"{sym}:htf"] = htf_map[sym]
-            if sym in ltf_map:
-                result[f"{sym}:ltf"] = ltf_map[sym]
+            if sym in mtf_map:
+                result[f"{sym}:mtf"] = mtf_map[sym]
+            if sym in trigger_map:
+                result[f"{sym}:trigger"] = trigger_map[sym]
+                result[f"{sym}:ltf"] = trigger_map[sym]
 
     return result
 

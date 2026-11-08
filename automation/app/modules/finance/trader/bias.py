@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # ── Tunables ──────────────────────────────────────────────────────────────────
 
 _RSI_PERIOD        = 14
-_REGIME_WINDOW     = 8    # bars: RSI must be on one side of 50 for this many bars
+_REGIME_WINDOW     = 4    # bars: RSI must be on one side of 50 for this many bars
 _REGIME_THRESHOLD  = 50.0
 _HD_ORDER          = 5    # argrelextrema half-width (bars) for swing detection
 _HD_LOOKBACK       = 60   # bars scanned for hidden divergence pivots
@@ -139,7 +139,7 @@ register_bias_provider("rsi", RSIBiasProvider())
 # ── Step 1 — RSI Regime ───────────────────────────────────────────────────────
 
 def _rsi_regime(rsi_series) -> str:
-    """Cardwell regime: RSI consistently above/below 50 in the last N bars.
+    """Cardwell regime: RSI consistently above/below 50 in recent bars.
 
     Returns: "bull" | "bear" | "neutral"
     """
@@ -147,12 +147,14 @@ def _rsi_regime(rsi_series) -> str:
         return "neutral"
 
     window = rsi_series.iloc[-_REGIME_WINDOW:]
-    above  = (window > _REGIME_THRESHOLD).sum()
-    below  = (window < _REGIME_THRESHOLD).sum()
+    curr_rsi = float(rsi_series.iloc[-1])
+    above  = (window >= _REGIME_THRESHOLD).sum()
+    below  = (window <= _REGIME_THRESHOLD).sum()
 
-    if above >= _REGIME_WINDOW - 1:   # allow 1 dip below 50 in the window
+    # The most recent bar MUST align with the regime to prevent lagging during reversals
+    if above >= _REGIME_WINDOW - 1 and curr_rsi >= _REGIME_THRESHOLD:
         return "bull"
-    if below >= _REGIME_WINDOW - 1:
+    if below >= _REGIME_WINDOW - 1 and curr_rsi <= _REGIME_THRESHOLD:
         return "bear"
     return "neutral"
 

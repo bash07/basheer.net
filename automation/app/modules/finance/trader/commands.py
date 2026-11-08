@@ -39,7 +39,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     With a ticker:    scans only that single ticker regardless of market hours.
     """
     args = context.args or []
-    single_ticker = args[0].upper() if args else None
+    single_ticker = args[0].upper().strip() if args else None
 
     if single_ticker:
         msg = await update.message.reply_text(
@@ -58,8 +58,25 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         msg = await update.message.reply_text("🔍 Scanning full watchlist for Trade setups…")
         try:
             from .jobs import scan_all_tickers
-            await scan_all_tickers()
-            await msg.edit_text("✅ Full watchlist scan complete. Any setups have been sent as alerts.")
+            stats = await scan_all_tickers()
+            if stats and stats.get("scanned", 0) == 0:
+                closed = ", ".join(sorted(stats.get("closed_categories", []))) or "All monitored markets"
+                await msg.edit_text(
+                    f"⚠️ No financial markets currently open for watchlist tickers ({closed} closed).\n"
+                    "Use `/scan <ticker>` to scan a specific symbol off-hours.",
+                    parse_mode="Markdown",
+                )
+            elif stats:
+                scanned = stats.get("scanned", 0)
+                setups_count = stats.get("new_setups", 0)
+                setup_msg = f"{setups_count} new setup(s) sent as alerts." if setups_count > 0 else "No new setups found."
+                await msg.edit_text(
+                    f"✅ Full watchlist scan complete.\n"
+                    f"Scanned `{scanned}` active ticker(s). {setup_msg}",
+                    parse_mode="Markdown",
+                )
+            else:
+                await msg.edit_text("✅ Full watchlist scan complete. Any setups have been sent as alerts.")
         except Exception as e:
             logger.error("[trader] /scan (full): %s", e, exc_info=True)
             try:
@@ -71,12 +88,20 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def _scan_single(ticker: str) -> str:
     """Run the trading scanner for a single ticker and return a formatted result."""
     import asyncio
+    from datetime import datetime, timezone
     from sqlalchemy import select
     from core.db import get_db
     from modules.finance.watchlist.models import WatchlistEntry
-    from .schemas import scan_mode_for, timeframes_for
+    from .schemas import scan_mode_for, timeframe_triad_for
     from .setups import check_all
     from .data import get_provider
+    from .bias import compute_htf_bias
+    from .regimes import classify_bar_regime, classify_macro_regime
+    from .jobs import _update_open_trades_for_ticker
+    from .models import TradeSignal
+    from .chart import generate_chart
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    from modules.finance._shared.notify import notify_photo, notify
 
     # Look up category from watchlist
     with get_db() as db:
@@ -91,32 +116,142 @@ async def _scan_single(ticker: str) -> str:
         )
 
     mode = scan_mode_for(entry.category)
-    htf_tf, ltf_tf, _ = timeframes_for(mode)
+    triad = timeframe_triad_for(mode)
 
-    # Fetch OHLCV via configured DataProvider for this category
+    # Fetch 3-Tier Multi-Timeframe Triad OHLCV via configured DataProvider for this category
     provider = get_provider(entry.category)
     loop = asyncio.get_event_loop()
 
-    htf_df, ltf_df = await asyncio.gather(
-        loop.run_in_executor(None, provider.fetch_ohlcv, ticker, htf_tf),
-        loop.run_in_executor(None, provider.fetch_ohlcv, ticker, ltf_tf),
+    df_htf, df_mtf, df_trigger = await asyncio.gather(
+        loop.run_in_executor(None, provider.fetch_ohlcv, ticker, triad.htf),
+        loop.run_in_executor(None, provider.fetch_ohlcv, ticker, triad.mtf),
+        loop.run_in_executor(None, provider.fetch_ohlcv, ticker, triad.trigger),
     )
 
-    if htf_df is None or ltf_df is None or htf_df.empty or ltf_df.empty:
+    if df_htf is None or df_trigger is None or df_htf.empty or df_trigger.empty:
         return f"❌ Could not fetch OHLCV data for `{ticker}`\\. Try again in a moment\\."
 
-    setups = check_all(ticker, entry.category, htf_df, ltf_df)
+    # Update live outcome of previously fired setups and open OMS positions
+    with get_db() as db:
+        _update_open_trades_for_ticker(ticker, df_trigger, db)
+        try:
+            from .oms import update_open_positions_for_ticker
+            update_open_positions_for_ticker(ticker, df_trigger, db)
+        except Exception as e:
+            logger.warning("[trader] OMS position update failed for %s: %s", ticker, e)
+        db.commit()
+
+    # Precompute Macro Bias and Institutional Market Regime
+    bias = compute_htf_bias(df_htf, mode)
+    regime_df = df_mtf if (df_mtf is not None and len(df_mtf) >= 20) else df_htf
+    regime_info = classify_bar_regime(regime_df)
+    macro_regime = classify_macro_regime(bias.bias, regime_info.adx, regime_info.name)
+
+    # Evaluate 3-tier triad setups
+    setups = check_all(
+        ticker,
+        entry.category,
+        df_htf,
+        df_trigger,
+        df_mtf=df_mtf,
+        df_trigger=df_trigger,
+        mode=mode,
+    )
+
+    regime_emoji = {
+        "Orderly Trend Expansion": "🌊",
+        "Horizontal Range Chop": "🦀",
+        "High-Volatility Stop Raid": "⚡",
+        "Parabolic Blow-Off / Cascade": "🚀",
+        "Volatility Squeeze (Coil)": "🗜️",
+        "Broadening Megaphone": "📣",
+        "Creeping Drift / Melt-Up": "📈",
+        "Macro News Shock / Vacuum": "💥",
+    }.get(regime_info.name, "🏛️")
 
     if not setups:
-        from .bias import compute_htf_bias
-        bias = compute_htf_bias(htf_df, mode)
-        return (
-            f"📭 *{ticker}* — No Trade setups found right now\\.\n\n"
-            f"🧭 HTF Bias: *{bias.bias.replace('_', ' ').title()}*\n"
-            f"_{bias.bias_notes}_"
-        )
+        lines = [
+            f"📭 *{ticker}* — No Trade setups found right now\\.\n",
+            f"🧭 *Macro Bias:* `{bias.bias.replace('_', ' ').upper()}` \\({macro_regime}\\)",
+            f"{regime_emoji} *Market Regime:* `{regime_info.name}` \\(ADX: `{regime_info.adx:.1f}`\\)",
+        ]
+        if bias.bias_notes:
+            lines.append(f"_{_safe_md(bias.bias_notes)}_")
+        if regime_info.details:
+            lines.append(f"_{_safe_md(regime_info.details)}_")
+        return "\n".join(lines)
 
-    lines = [f"🎯 *{ticker}* — {len(setups)} setup(s) found:\n"]
+    # Persist detected setups to DB so they can be approved/dismissed via OMS
+    now = datetime.now(timezone.utc)
+    signal_entries = []
+    with get_db() as db:
+        for s in setups:
+            row = TradeSignal(
+                ticker=s.ticker,
+                category=s.category,
+                mode=s.mode,
+                setup_name=s.setup_name,
+                direction=s.direction,
+                setup_type=s.setup_type,
+                bias=s.bias.bias,
+                conf_score=s.confluence.score,
+                conf_label=s.confluence.label,
+                entry_mid=s.entry_mid,
+                stop_loss=s.stop_loss,
+                tp1=s.tp1,
+                rr_ratio=s.rr_ratio,
+                setup_json=s.to_db_json(),
+                fired_at=now,
+                notified=True,
+            )
+            db.add(row)
+            db.flush()
+            signal_entries.append((s, row.id))
+        db.commit()
+
+    # Dispatch interactive chart alerts with Approve/Dismiss buttons
+    for s, sig_id in sorted(signal_entries, key=lambda x: x[0].confluence.score, reverse=True):
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "✅ Approve",
+                    callback_data=f"trade:approve:{sig_id}",
+                ),
+                InlineKeyboardButton(
+                    "❌ Dismiss",
+                    callback_data=f"trade:dismiss:{sig_id}",
+                ),
+            ]
+        ])
+        try:
+            png_path = await loop.run_in_executor(None, generate_chart, s, df_trigger)
+            if png_path:
+                caption = s.to_telegram_text()
+                if len(caption) > 1024:
+                    caption = caption[:1020] + "…"
+                await notify_photo(
+                    png_path,
+                    caption=caption,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard,
+                )
+            else:
+                await notify(
+                    s.to_telegram_text(),
+                    parse_mode="Markdown",
+                    reply_markup=keyboard,
+                )
+        except Exception as e:
+            logger.warning("[trader] Failed to send setup alert for %s: %s", ticker, e)
+            try:
+                await notify(s.to_telegram_text(), parse_mode="Markdown", reply_markup=keyboard)
+            except Exception:
+                pass
+
+    lines = [
+        f"🎯 *{ticker}* — {len(setups)} setup(s) found:\n",
+        f"🏛️ Regime: `{regime_info.name}` | Bias: `{bias.bias.replace('_', ' ').upper()}`\n",
+    ]
     for s in sorted(setups, key=lambda x: x.confluence.score, reverse=True):
         dir_e = "📈" if s.direction == "long" else "📉"
         lines.append(
@@ -124,16 +259,7 @@ async def _scan_single(ticker: str) -> str:
         )
         lines.append(f"  Entry: `{s.entry_low:,.4f}` – `{s.entry_high:,.4f}` | SL: `{s.stop_loss:,.4f}` | TP1: `{s.tp1:,.4f}`")
 
-    lines.append("\n_Full alerts sent above ↑_")
-
-    # Also send full alerts
-    from modules.finance._shared.notify import notify
-    for s in sorted(setups, key=lambda x: x.confluence.score, reverse=True):
-        try:
-            await notify(s.to_telegram_text(), parse_mode="Markdown")
-        except Exception as e:
-            logger.warning("[trader] Failed to send setup alert: %s", e)
-
+    lines.append("\n_Full interactive alerts with chart & approval buttons sent above ↑_")
     return "\n".join(lines)
 
 
@@ -200,7 +326,7 @@ async def traderbias_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         from sqlalchemy import select
         from core.db import get_db
         from modules.finance.watchlist.models import WatchlistEntry
-        from .schemas import scan_mode_for, timeframes_for
+        from .schemas import scan_mode_for, timeframe_triad_for
         from .bias import compute_htf_bias
         from .jobs import _fetch_tf_batch, _OHLCV_PARAMS
         import asyncio
@@ -218,7 +344,8 @@ async def traderbias_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return
 
         mode   = scan_mode_for(entry.category)
-        htf_tf, _, _ = timeframes_for(mode)
+        triad  = timeframe_triad_for(mode)
+        htf_tf = triad.htf
 
         from .data import get_provider
         provider = get_provider(entry.category)

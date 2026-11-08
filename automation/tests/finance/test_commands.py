@@ -685,3 +685,189 @@ class TestPerformanceCommand:
         assert "Total Closed: `3` (1W / 1L / 1BE)" in text
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Pattern 11 — /scan command with 3-tier triad, market regime, & OMS approval
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestScanCommand:
+    """Verifies /scan command with 3-tier triad, regime diagnostics, and OMS approvals."""
+
+    async def test_scan_not_in_watchlist(self, make_update, clean_db):
+        update, context = make_update(args=["UNKNOWN"])
+        from modules.finance.trader.commands import scan_command
+        await scan_command(update, context)
+
+        update.message.reply_text.assert_called_once()
+        sent_msg = update.message.reply_text.return_value
+        sent_msg.edit_text.assert_called_once()
+        text = sent_msg.edit_text.call_args[0][0]
+        assert "not in your watchlist" in text
+
+    async def test_scan_single_triad_no_setups(self, make_update, clean_db):
+        import pandas as pd
+        import numpy as np
+        from modules.finance.watchlist.models import WatchlistEntry
+        from modules.finance.trader.commands import scan_command
+
+        clean_db.add(WatchlistEntry(symbol="BTC-USD", display_name="Bitcoin", category="crypto"))
+        clean_db.commit()
+
+        dates = pd.date_range("2026-01-01", periods=30, freq="1h")
+        mock_df = pd.DataFrame({
+            "Open": np.linspace(50000, 51000, 30),
+            "High": np.linspace(50100, 51100, 30),
+            "Low": np.linspace(49900, 50900, 30),
+            "Close": np.linspace(50050, 51050, 30),
+            "Volume": np.full(30, 100.0),
+        }, index=dates)
+
+        update, context = make_update(args=["BTC-USD"])
+
+        with patch("modules.finance.trader.data.BinanceProvider.fetch_ohlcv", return_value=mock_df) as mock_fetch, \
+             patch("modules.finance.trader.setups.check_all", return_value=[]) as mock_check:
+            await scan_command(update, context)
+
+            # Assert 3-tier triad intervals (htf: 4h, mtf: 15m, trigger: 5m for crypto)
+            called_intervals = [call[0][1] for call in mock_fetch.call_args_list]
+            assert "4h" in called_intervals
+            assert "15m" in called_intervals
+            assert "5m" in called_intervals
+
+            mock_check.assert_called_once()
+            _, kwargs = mock_check.call_args
+            assert "df_mtf" in kwargs
+            assert "df_trigger" in kwargs
+
+        sent_msg = update.message.reply_text.return_value
+        sent_msg.edit_text.assert_called_once()
+        text = sent_msg.edit_text.call_args[0][0]
+        assert "No Trade setups found" in text
+        assert "Market Regime:" in text
+        assert "Macro Bias:" in text
+
+    async def test_scan_single_with_setups_creates_signal_and_buttons(self, make_update, clean_db):
+        import pandas as pd
+        import numpy as np
+        from modules.finance.watchlist.models import WatchlistEntry
+        from modules.finance.trader.commands import scan_command
+        from modules.finance.trader.schemas import TradeSetup, BiasResult, ConfluenceReport
+        from modules.finance.trader.models import TradeSignal
+        from sqlalchemy import select
+
+        clean_db.add(WatchlistEntry(symbol="BTC-USD", display_name="Bitcoin", category="crypto"))
+        clean_db.commit()
+
+        dates = pd.date_range("2026-01-01", periods=30, freq="1h")
+        mock_df = pd.DataFrame({
+            "Open": np.linspace(50000, 51000, 30),
+            "High": np.linspace(50100, 51100, 30),
+            "Low": np.linspace(49900, 50900, 30),
+            "Close": np.linspace(50050, 51050, 30),
+            "Volume": np.full(30, 100.0),
+        }, index=dates)
+
+        mock_setup = TradeSetup(
+            ticker="BTC-USD",
+            category="crypto",
+            mode="intraday",
+            setup_name="OB Retracement",
+            direction="long",
+            setup_type="continuation",
+            bias=BiasResult(
+                mode="intraday",
+                htf_tf="4h",
+                ltf_tf="5m",
+                vp_lookback=60,
+                rsi_value=55.0,
+                regime="bull",
+                hidden_div="none",
+                bias="strong_bull",
+            ),
+            confluence=ConfluenceReport(score=8.5, label="high", factors=[]),
+            entry_low=50000.0,
+            entry_high=50200.0,
+            stop_loss=49500.0,
+            tp1=52000.0,
+            rr_ratio=3.0,
+        )
+
+        update, context = make_update(args=["BTC-USD"])
+
+        with patch("modules.finance.trader.data.BinanceProvider.fetch_ohlcv", return_value=mock_df), \
+             patch("modules.finance.trader.setups.check_all", return_value=[mock_setup]), \
+             patch("modules.finance.trader.chart.generate_chart", return_value="/tmp/test_chart.png"), \
+             patch("modules.finance._shared.notify.notify_photo", new_callable=AsyncMock) as mock_notify_photo:
+            await scan_command(update, context)
+
+            mock_notify_photo.assert_called_once()
+            _, kwargs = mock_notify_photo.call_args
+            reply_markup = kwargs.get("reply_markup")
+            assert reply_markup is not None
+            # Verify callback data contains approve and dismiss actions
+            callback_datas = [btn.callback_data for row in reply_markup.inline_keyboard for btn in row]
+            assert any("trade:approve:" in d for d in callback_datas)
+            assert any("trade:dismiss:" in d for d in callback_datas)
+
+        # Verify TradeSignal was persisted in DB
+        sig = clean_db.execute(select(TradeSignal).where(TradeSignal.ticker == "BTC-USD")).scalar_one_or_none()
+        assert sig is not None
+        assert sig.setup_name == "OB Retracement"
+        assert sig.rr_ratio == 3.0
+
+        sent_msg = update.message.reply_text.return_value
+        sent_msg.edit_text.assert_called_once()
+        text = sent_msg.edit_text.call_args[0][0]
+        assert "1 setup(s) found" in text
+        assert "OB Retracement" in text
+
+    async def test_scan_full_watchlist_markets_closed_feedback(self, make_update, clean_db):
+        from modules.finance.watchlist.models import WatchlistEntry
+        from modules.finance.trader.commands import scan_command
+
+        clean_db.add(WatchlistEntry(symbol="AAPL", display_name="Apple Inc.", category="us_stock"))
+        clean_db.commit()
+
+        update, context = make_update(args=[])
+
+        with patch("modules.finance._shared.market_hours.is_market_open", return_value=False):
+            await scan_command(update, context)
+
+        sent_msg = update.message.reply_text.return_value
+        sent_msg.edit_text.assert_called_once()
+        text = sent_msg.edit_text.call_args[0][0]
+        assert "No financial markets currently open" in text
+        assert "us_stock closed" in text
+
+    async def test_scan_full_watchlist_markets_open_with_real_dfs(self, make_update, clean_db):
+        import pandas as pd
+        import numpy as np
+        from modules.finance.watchlist.models import WatchlistEntry
+        from modules.finance.trader.commands import scan_command
+
+        clean_db.add(WatchlistEntry(symbol="BTC-USD", display_name="Bitcoin", category="crypto"))
+        clean_db.commit()
+
+        dates = pd.date_range("2026-01-01", periods=30, freq="1h")
+        mock_df = pd.DataFrame({
+            "Open": np.linspace(50000, 51000, 30),
+            "High": np.linspace(50100, 51100, 30),
+            "Low": np.linspace(49900, 50900, 30),
+            "Close": np.linspace(50050, 51050, 30),
+            "Volume": np.full(30, 100.0),
+        }, index=dates)
+
+        update, context = make_update(args=[])
+
+        with patch("modules.finance.trader.data.BinanceProvider.fetch_ohlcv_batch", return_value={"BTC-USD": mock_df}), \
+             patch("modules.finance.trader.setups.check_all", return_value=[]):
+            await scan_command(update, context)
+
+        sent_msg = update.message.reply_text.return_value
+        sent_msg.edit_text.assert_called_once()
+        text = sent_msg.edit_text.call_args[0][0]
+        assert "Full watchlist scan complete" in text
+        assert "Scanned `1` active ticker(s)" in text
+
+
+
+

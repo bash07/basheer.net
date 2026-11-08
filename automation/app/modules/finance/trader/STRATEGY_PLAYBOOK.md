@@ -11,6 +11,9 @@ This playbook documents the empirical backtest performance, structural edge, fai
 | **Range Liquidity Sweep** | Mean Reversion / SFP | **Ranging / Consolidation / Chop**<br>(ADX < 25, clear VAH/VAL boundaries) | High (12–15 / 1k bars) | 1.20× – 2.00× | 42% – 50% | Modest, high-turnover income |
 | **OB Retracement** | Trend Continuation | **Orderly Trend Expansion**<br>(ADX $\ge 18$, structural BOS + deep retrace) | Moderate (4–5 / 1k bars) | 2.20× – 3.00× | 40% – 52% | High payoff, asymmetric compounding |
 | **Liquidity Sweep + FVG** | Liquidity Hunt + Imbalance | **High-Volatility Stop Hunts**<br>(Pro-trend SSL/BSL sweep + strong displacement) | Selective (0.5–1 / 1k bars) | 2.50× – 4.80× | 50% – 70% | High-conviction sniper execution |
+| **Displacement + FVG** | Imbalance Fill | **Impulse Expansion**<br>(Wide displacement candle + fair value gap) | Moderate (3–5 / 1k bars) | 1.50× – 2.50× | 45% – 55% | Fast momentum continuation |
+| **Breakdown Retest** | Market Structure Transition | **Bearish Rollovers / Breakdown Distribution**<br>(BOS/CHoCH breaking key swing low + retest) | Moderate (4–6 / 1k bars) | 1.80× – 3.00× | 48% – 58% | Asymmetric short rollover edge |
+| **Creeping Drift** | Ribbon Trend Following | **Creeping Drift / Melt-Up (Regime 7)**<br>(Persistent EMA 8/21 slope, low-mod ADX 15–32) | Moderate (3–5 / 1k bars) | 1.80× – 3.00× | 50% – 60% | Captures low-vol grinding trends (e.g. Nifty) |
 | **EMA Pullback + Hidden Div** | Momentum Continuation | **Strong Momentum Runaway**<br>(EMA 21/50 stack + RSI hidden divergence) | Low (0.5–1 / 1k bars) | 1.80× – 2.50× | 45% – 55% | Trend-following momentum runner |
 
 ---
@@ -75,7 +78,7 @@ flowchart TD
 | **4** | **Parabolic Blow-Off / Cascade** | Extreme ADX $> 45.0$<br>RSI pinned $> 85$ or $< 15$<br>Candles detached from EMA 20 by $> 3\times\text{ATR}$ | **Stand Aside / Trail Only**<br>*(Wait for volume climax & MTF CHoCH)* | **NEVER FADE:** Range Sweeps & early counter-trend fading |
 | **5** | **Volatility Squeeze (Coil)** | ATR at multi-week lows (bottom 20th percentile)<br>Bollinger Bands inside Keltner Channels<br>Range width $< 1.0\times\text{ATR}$ | **Stand Aside**<br>*(Await post-breakout displacement FVG)* | Range Liquidity Sweep *(boundary breaks violently on expansion)* |
 | **6** | **Broadening Megaphone** | Expanding cone (Higher Highs AND Lower Lows)<br>Alternating bullish and bearish BOS<br>High ATR with neutral/erratic bias | **Stand Aside / Capital Preservation**<br>*(Microstructure is seeking price discovery)* | Trend Continuations & OB Retracements *(both sides get double-stopped)* |
-| **7** | **Creeping Drift / Melt-Up** | Low-to-moderate ADX ($15–20$)<br>Persistent positive/negative EMA slope<br>Tiny overlapping bars, RSI 55–65 | **Momentum Trail**<br>*(Shallow EMA 9/21 re-tests; avoid deep 50% limit bids)* | OB Retracement & Liquidity Sweeps *(deep pullbacks never fill)* |
+| **7** | **Creeping Drift / Melt-Up** | Low-to-moderate ADX ($15–32$)<br>Persistent positive/negative EMA slope<br>Tiny overlapping bars, RSI 55–65 | **1. Creeping Drift (EMA 8/21 Ribbon)**<br>**2. Momentum Trail** | OB Retracement & Liquidity Sweeps *(deep pullbacks never fill)* |
 | **8** | **Macro News / Vacuum Shock** | High-impact economic news (CPI, FOMC, NFP)<br>Order book liquidity collapses<br>Giant single-bar wicks ($> 5\times\text{ATR}$) | **Event Blackout / Kill Switch**<br>*(Halt execution $\pm 15$ min around event)* | All limit-order strategies *(severe slippage and gap risk)* |
 
 ---
@@ -362,4 +365,60 @@ Upon simulation completion, `backtest.py` generates comprehensive post-hoc diagn
    - The primary calibration tool used to verify Section 3's `Recommended` vs `Prohibited` matrix.
 11. **Verbose Replay Log**:
    - Bar-by-bar forensic audit listing setup name, entry/SL/TP levels, macro trend, micro regime, exit trigger (`FULL_WIN`, `SCRATCH_WIN`, `FULL_LOSS`), MFE, MAE, and realized $R:R$.
+
+---
+
+## 7. Unified Minimum Stop Loss & Volatility Floor Protocol
+
+### 7.1. The "Microscopic Stop Loss" Trap (Root Cause Analysis)
+
+Live production telemetry (GCP `automation.db`, Signals #36, #37, #38, #40) revealed a systemic vulnerability affecting low-timeframe trigger execution:
+- **Quiet Micro-Timeframe Compression**: On 5m/15m trigger charts, ATR often contracts during consolidation (e.g. BTC-USD 5m ATR dropped to $\$70$–$\$80$).
+- **Micro-Distance Stop Losses**: When an entry was taken immediately upon a sweep candle close, a standard structural buffer ($0.30\times$–$0.50\times$ ATR) resulted in total risk distances as small as **$\$38.37$ (0.046%)** on BTC at $\$83,500$.
+- **The 10/10 Confidence Mirage**:
+  $$\text{Target R:R} = \frac{\text{Distance to Target (POC)}}{\text{Risk Distance (Entry} - \text{SL)}} = \frac{\$365}{\$38.37} = 9.51\times$$
+  The confluence scoring engine detected an apparently staggering $9.51\times$ R:R and awarded the setup a maximum **10.0/10 Confluence Score**.
+- **Instant Noise Premature Stop-Out**: In live execution, typical exchange spread, bid-ask slippage, and ordinary microstructure noise ($\pm 0.10\%$) instantly liquidated the positions before the macro mean-reversion move could materialize.
+- **Cross-Strategy Contagion**: Production database audits confirmed this affected not only *Range Liquidity Sweep* (Signals #36, #37, #40), but also *EMA Pullback* (Signal #38 with a $\$51$ / 0.06% SL gap).
+
+### 7.2. Asset-Class Calibrated Volatility Floor (`calculate_min_sl_distance`)
+
+To eliminate the micro-SL trap while preserving structural price action invalidation, a standardized volatility floor is enforced via `calculate_min_sl_distance()` in `automation/app/modules/finance/trader/strategies/base.py`:
+
+```python
+def calculate_min_sl_distance(
+    category: str,
+    entry_price: float,
+    atr: float = 0.0,
+) -> float:
+    """Enforces minimum Stop Loss distance to prevent microscopic stops and noise stop-outs.
+
+    Rules:
+      - Crypto: >= max(1.0 * ATR, 0.50% * price)
+      - US Stocks / Indices: >= max(0.75 * ATR, 0.25% * price)
+      - Forex / Commodities: >= max(0.75 * ATR, 0.15% * price)
+    """
+```
+
+| Asset Category | Min ATR Multiple | Min Price Percentage | Minimum SL Distance on Benchmark Asset |
+| :--- | :---: | :---: | :--- |
+| **Crypto** (`crypto`) | $1.00\times \text{ATR}$ | $\mathbf{0.50\%}$ | $\ge \$415.00$ on BTC-USD at $\$83,000$ |
+| **US Stocks & Indices** (`us_stock`, `us_index`, `indian_stock`, `indian_index`) | $0.75\times \text{ATR}$ | $\mathbf{0.25\%}$ | $\ge \$1.25$ on SPY at $\$500.00$; $\ge \$60$ on Nifty at $24,000$ |
+| **Forex & Commodities** (`forex`, `commodity`) | $0.75\times \text{ATR}$ | $\mathbf{0.15\%}$ | $\ge 15$ pips on EUR/USD at $1.0800$; $\ge \$3.75$ on Gold at $\$2,500$ |
+
+### 7.3. Cross-Strategy Universal Integration
+
+All active strategies enforce the volatility floor before computing trade risk/reward or publishing trade setups:
+
+1. **Range Liquidity Sweep** (`range_liquidity_sweep.py`):
+   $$\text{SL}_{\text{clamped}} = \text{Entry} \pm \max(\text{Distance to Structural Wick Buffer},\; \text{Min SL Distance})$$
+   - Recalculates $\text{RR}_{\text{TP1}}$ and $\text{RR}_{\text{TP2}}$ using the clamped stop loss.
+   - If the clamped SL causes $\text{RR}_{\text{TP1}} < 1.20$ and $\text{RR}_{\text{TP2}} < 2.00$, the setup is discarded as mathematically unviable.
+2. **EMA Pullback + Hidden Divergence** (`ema_pullback.py`):
+   $$\text{Stop Loss} = \text{Entry} \pm \max(|\text{Entry} - \text{Swing Pivot}|,\; \text{Min SL Distance})$$
+3. **Order Block Retracement** (`ob_retracement.py`):
+   $$\text{Stop Loss} = \text{Entry} \pm \max(|\text{Entry} - \text{OB Invalidation}|,\; \text{Min SL Distance})$$
+4. **Liquidity Sweep + FVG** (`liquidity_sweep.py`):
+   $$\text{Stop Loss} = \text{Entry} \pm \max(\text{Sweep High/Low} \pm \text{Buffer},\; \text{Min SL Distance})$$
+
 

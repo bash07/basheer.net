@@ -307,10 +307,18 @@ class OBRetracementStrategy(BaseStrategy):
         else:
             target_struct = ctx.structure
 
+        min_sl_dist = ctx.get_min_sl_distance(entry_price=entry_mid, atr=atr)
+
         if direction == "long":
-            stop_loss = ob.zone_low - buffer
-            sl_dist   = ctx.current_price - stop_loss
-            if sl_dist <= 0 or sl_dist > (_MAX_SL_DIST_ATR * atr):
+            raw_sl    = ob.zone_low - buffer
+            sl_dist   = ctx.current_price - raw_sl
+            if sl_dist < min_sl_dist:
+                stop_loss = ctx.current_price - min_sl_dist
+                sl_dist   = min_sl_dist
+            else:
+                stop_loss = raw_sl
+
+            if sl_dist > (_MAX_SL_DIST_ATR * atr):
                 return None
 
             # Intermediate swing target for TP1 (scale-out + breakeven shift)
@@ -329,9 +337,15 @@ class OBRetracementStrategy(BaseStrategy):
             invalidation = f"Candle closes below {ob.zone_low:,.4f} (OB distal edge)"
             entry_price = min(ctx.current_price, ob.midpoint + zone_size * 0.25)
         else:
-            stop_loss = ob.zone_high + buffer
-            sl_dist   = stop_loss - ctx.current_price
-            if sl_dist <= 0 or sl_dist > (_MAX_SL_DIST_ATR * atr):
+            raw_sl    = ob.zone_high + buffer
+            sl_dist   = raw_sl - ctx.current_price
+            if sl_dist < min_sl_dist:
+                stop_loss = ctx.current_price + min_sl_dist
+                sl_dist   = min_sl_dist
+            else:
+                stop_loss = raw_sl
+
+            if sl_dist > (_MAX_SL_DIST_ATR * atr):
                 return None
 
             candidate_tp1 = _next_swing_low(ctx.structure, 0, df_trigger)

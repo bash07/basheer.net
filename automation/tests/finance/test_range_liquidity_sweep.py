@@ -349,3 +349,28 @@ class TestRangeLiquiditySweepMTF:
         assert setup_equity is not None
         # SL = 103.8 + 0.30 * 1.0 = 104.10
         assert round(setup_equity.stop_loss, 2) == 104.10
+
+    def test_min_sl_distance_floor_enforced(self):
+        """Tiny ATR or micro-wick must not generate dangerous microscopic stop losses."""
+        # BTC at 80,000 with range 75000 to 85000, trigger ATR = 50.0
+        df_trig = _build_range_df(50, center=80000.0)
+        vah, val, atr = 82000.0, 78000.0, 50.0
+
+        # Bar penetrates VAH 82000 to 82020 (within 1 ATR = 50), closes back inside at 81980
+        df_trig.iloc[-2, df_trig.columns.get_loc("Open")] = 81970.0
+        df_trig.iloc[-2, df_trig.columns.get_loc("High")] = 82020.0
+        df_trig.iloc[-2, df_trig.columns.get_loc("Low")] = 81960.0
+        df_trig.iloc[-2, df_trig.columns.get_loc("Close")] = 81980.0
+        df_trig.iloc[-1, df_trig.columns.get_loc("Close")] = 81975.0
+
+        ctx = _make_context(df_trig, bias_str="neutral", vah=vah, val=val, rsi_val=70.0, atr=atr)
+        ctx.category = "crypto"
+        setup = self.strategy.evaluate(ctx)
+        assert setup is not None
+
+        # Min SL for crypto: max(1.0 * atr, 0.005 * price) -> max(50, 0.005 * ~81977) = 409.88
+        # Raw SL dist would have been (82020 + 0.50*50) - 81977.5 = 67.5 (dangerously tiny!)
+        # The floor guarantees SL distance >= 400.0
+        sl_distance = setup.stop_loss - ((setup.entry_low + setup.entry_high) / 2.0)
+        assert sl_distance >= 400.0
+

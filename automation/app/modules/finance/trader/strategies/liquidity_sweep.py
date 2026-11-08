@@ -347,7 +347,7 @@ class LiquiditySweepFVGStrategy(BaseStrategy):
         is_crypto = (ctx.category == "crypto")
         buffer_mult = 0.50 if is_crypto else 0.25
         buffer = atr * buffer_mult
-        min_sl_dist = _MIN_SL_DIST_ATR * atr
+        min_sl_dist = max(_MIN_SL_DIST_ATR * atr, ctx.get_min_sl_distance(entry_price=entry_mid, atr=atr))
 
         if direction == "long":
             anchor_low = min(recent_sweep.price, sweep_low)

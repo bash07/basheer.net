@@ -63,7 +63,7 @@ python main.py
 ### 2.1. Trading & Order Management System (`finance/trader`)
 | Command | Example | Description |
 |---|---|---|
-| `/scan [ticker]` | `/scan BTC-USD` | Runs institutional SMC scan on watchlist or a specific ticker. |
+| `/scan [ticker]` | `/scan BTC-USD` | Runs 3-tier MTF triad SMC scan on watchlist or specific ticker. Generates annotated charts with inline Approve/Dismiss OMS buttons and regime diagnostics. |
 | `/setups` | `/setups` | Shows high-probability trade alerts detected in the last 48 hours. |
 | `/positions` | `/positions` | Live open positions table with live price, quantity, and unrealized P&L / R:R. |
 | `/close <id>` | `/close 1` | Manually exits an open position at current market price. |

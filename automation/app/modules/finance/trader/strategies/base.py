@@ -247,12 +247,45 @@ class StrategyContext:
     def __contains__(self, key: str) -> bool:
         return key in self.indicators
 
+    def get_min_sl_distance(self, entry_price: float | None = None, atr: float | None = None) -> float:
+        """Return the minimum stop loss distance for this context to prevent micro-stop traps."""
+        price = entry_price if entry_price is not None else self.current_price
+        atr_val = atr if atr is not None else (self.atr_14 or 0.0)
+        return calculate_min_sl_distance(self.category, price, atr_val)
+
     def __repr__(self) -> str:
         ind_keys = [k for k in self.indicators if not k.startswith("_")]
         return (
             f"<StrategyContext {self.ticker} mode={self.mode} "
             f"price={self.current_price:.4f} indicators={ind_keys}>"
         )
+
+
+def calculate_min_sl_distance(category: str, entry_price: float, atr: float | None = None) -> float:
+    """Return the absolute minimum stop loss distance to prevent micro-stop noise traps.
+
+    Guarantees:
+      - Crypto: at least 0.50% of price and at least 1.0x ATR ($415 on $83k BTC).
+      - US Stock / Index: at least 0.25% of price and at least 0.75x ATR ($15 on $6000 SPX).
+      - Forex: at least 0.15% of price and at least 0.75x ATR.
+    """
+    cat = (category or "").lower()
+    atr_val = atr if atr is not None and atr > 0 else 0.0
+
+    if cat == "crypto":
+        pct_floor = entry_price * 0.0050
+        atr_floor = atr_val * 1.00
+    elif cat in ("us_stock", "us_index"):
+        pct_floor = entry_price * 0.0025
+        atr_floor = atr_val * 0.75
+    elif cat in ("forex", "commodity"):
+        pct_floor = entry_price * 0.0015
+        atr_floor = atr_val * 0.75
+    else:
+        pct_floor = entry_price * 0.0025
+        atr_floor = atr_val * 0.75
+
+    return max(pct_floor, atr_floor)
 
 
 class BaseStrategy(ABC):

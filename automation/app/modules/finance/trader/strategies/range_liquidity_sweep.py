@@ -179,16 +179,17 @@ class RangeLiquiditySweepStrategy(BaseStrategy):
             return None
 
         # ── Pro-Trend Drift Filter (Align Range Trades with HTF Drift) ───────
+        # Counter-trend sweeps are only prohibited during runaway trend expansion (strong_bull / strong_bear with high ADX)
         if bias is not None:
-            if "bull" in bias.bias and direction == "short":
+            if bias.bias == "strong_bull" and direction == "short" and adx_val >= 22.0:
                 logger.debug(
-                    "[trader.strategy] %s: Short rejected — cannot short range ceiling against bullish HTF drift",
+                    "[trader.strategy] %s: Short rejected — cannot short range ceiling against strong_bull trend expansion",
                     ctx.ticker,
                 )
                 return None
-            if "bear" in bias.bias and direction == "long":
+            if bias.bias == "strong_bear" and direction == "long" and adx_val >= 22.0:
                 logger.debug(
-                    "[trader.strategy] %s: Long rejected — cannot buy range floor against bearish HTF drift",
+                    "[trader.strategy] %s: Long rejected — cannot buy range floor against strong_bear trend expansion",
                     ctx.ticker,
                 )
                 return None
@@ -269,22 +270,27 @@ class RangeLiquiditySweepStrategy(BaseStrategy):
             ("bull" in bias.bias and direction == "long") or ("bear" in bias.bias and direction == "short")
         )
 
+        entry_low = min(current_price, float(trigger_bar["Close"]))
+        entry_high = max(current_price, float(trigger_bar["Close"]))
+        entry_mid = (entry_low + entry_high) / 2.0
+
+        min_sl_dist = ctx.get_min_sl_distance(entry_price=entry_mid, atr=atr)
+
         if direction == "short":
-            stop_loss = sweep_extreme + buffer
+            raw_sl = sweep_extreme + buffer
+            sl_dist = raw_sl - entry_mid
+            stop_loss = entry_mid + max(sl_dist, min_sl_dist)
             tp1 = midpoint
             tp2 = sup + (0.20 * atr)
             invalidation = f"Candle closes above sweep high {sweep_extreme:,.4f}"
-            entry_low = min(current_price, float(trigger_bar["Close"]))
-            entry_high = max(current_price, float(trigger_bar["Close"]))
         else:
-            stop_loss = sweep_extreme - buffer
+            raw_sl = sweep_extreme - buffer
+            sl_dist = entry_mid - raw_sl
+            stop_loss = entry_mid - max(sl_dist, min_sl_dist)
             tp1 = midpoint
             tp2 = res - (0.20 * atr)
             invalidation = f"Candle closes below sweep low {sweep_extreme:,.4f}"
-            entry_low = min(current_price, float(trigger_bar["Close"]))
-            entry_high = max(current_price, float(trigger_bar["Close"]))
 
-        entry_mid = (entry_low + entry_high) / 2.0
         rr_tp1 = _calc_rr(entry_mid, stop_loss, tp1)
         rr_tp2 = _calc_rr(entry_mid, stop_loss, tp2)
 

@@ -466,3 +466,7 @@ def classify_bar_regime(
         prohibited_setups=PROHIBITED_SETUPS_BY_REGIME[REGIME_RANGE_CHOP],
         recommended_setups=RECOMMENDED_SETUPS_BY_REGIME[REGIME_RANGE_CHOP],
     )
+
+
+# Backward-compatible alias
+classify_market_regime = classify_bar_regime

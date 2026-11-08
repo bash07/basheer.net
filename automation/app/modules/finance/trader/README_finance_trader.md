@@ -51,12 +51,18 @@ flowchart TD
         CTX["StrategyContext\n(Shared Pre-computed Context & Lazy Indicators)"]
         S1["OB Retracement"]
         S2["Liquidity Sweep + FVG"]
-        S3["Displacement + FVG"]
-        S4["EMA Pullback + Hidden Div"]
+        S3["Breakdown Retest\n(Bearish Distribution / CHoCH)"]
+        S4["Displacement + FVG"]
+        S5["Range Liquidity Sweep\n(Mean Reversion / SFP)"]
+        S6["EMA Pullback + Hidden Div"]
+        S7["Creeping Drift\n(EMA Ribbon Grinding / Regime 7)"]
         CTX --> S1
         CTX --> S2
         CTX --> S3
         CTX --> S4
+        CTX --> S5
+        CTX --> S6
+        CTX --> S7
     end
 
     subgraph ExecutionLayer["Order Management System (OMS - oms/)"]
@@ -252,7 +258,7 @@ trades
 
 | Command | Arguments | Description |
 |---|---|---|
-| `/scan` | `[ticker]` | Run manual scan on full watchlist or a single ticker. |
+| `/scan` | `[ticker]` | Run institutional 3-tier triad scan on full watchlist or a specific ticker with interactive OMS approval buttons and regime diagnostics. |
 | `/setups` | None | List recent trade setups detected in the past 48 hours. |
 | `/positions` | None | Live open positions table with current price, unrealized P&L (\$), and unrealized $R:R$. |
 | `/close` | `<position_id>` | Manually close an open position at the current market price. |
@@ -261,6 +267,30 @@ trades
 | `/traderbias` | `<ticker>` | Deep-dive HTF bias breakdown (Regime, Hidden Divergence, Cardwell zones). |
 | `/confluence` | `<ticker>` | Volume Profile (POC, VAH, VAL, HVN, LVN) + classical S/R levels. |
 | `/resume` | None | Reset Portfolio Circuit Breaker after automated halt. |
+
+### 5.1. Live Scanner Pipeline (`/scan` & Scheduled Jobs)
+
+The `/scan` command operates in two modes:
+
+#### 1. Single-Ticker On-Demand Scan (`/scan <ticker>`)
+* **Market-Hours Independent**: Forces an immediate scan on the specified asset regardless of market open status (ideal for crypto 24/7 or off-hours equity technical analysis).
+* **3-Tier Multi-Timeframe Triad Resolution**: Dynamically maps asset category to its canonical `TimeframeTriad`:
+  * **Crypto (`intraday`)**: `4h` (HTF "Where") $\rightarrow$ `15m` (MTF "When") $\rightarrow$ `5m` (Trigger "How") via native `BinanceProvider`.
+  * **Equities / Forex (`swing`)**: `1wk` (HTF "Where") $\rightarrow$ `4h` (MTF "When") $\rightarrow$ `1h` (Trigger "How") via `YFinanceProvider`.
+* **State & OMS Position Refresh**: Evaluates open positions and historical signals for the ticker, ratcheting trailing stop-losses and updating realized $R:R$ outcomes.
+* **Institutional Regime & Bias Diagnostics**: Computes macro bias and microstructure regime (`classify_bar_regime`). When no setup passes strategy gates, reports the active regime (e.g. `🦀 Horizontal Range Chop`, `🗜️ Volatility Squeeze (Coil)`, `🌊 Orderly Trend Expansion`), ADX score, and reason for standing down.
+* **Interactive OMS Signal Generation**: When high-confluence setups pass all 3-tier gates:
+  * Persists `TradeSignal` record to SQLite database.
+  * Generates annotated candlestick chart on trigger timeframe with entry zone, stop-loss, and multi-tier TP targets.
+  * Dispatches Telegram photo alert with **`✅ Approve`** and **`❌ Dismiss`** inline buttons.
+  * Tapping **Approve** immediately routes the order into the configured OMS broker (`PaperBroker` or `BinanceBroker` Spot/Futures).
+
+#### 2. Full Watchlist Automated Scan (`/scan` with no arguments)
+* Scans all symbols currently tracked in the database watchlist across open market categories (scheduled every 30 minutes via APScheduler).
+* **Market-Hours Awareness**: Checks `is_market_open(category)` before downloading data; if all markets are closed, alerts the user with closed category details and recommends `/scan <ticker>`.
+* **Batch Triad Processing**: Asynchronously batches HTF, MTF, and Trigger klines across providers to optimize throughput and rate limits.
+* **24-Hour Deduplication**: Deduplicates incoming setups against previous signals within a 24-hour window (`ticker:setup_name:direction`).
+* Dispatches chart alerts with one-tap Approve/Dismiss buttons for every newly discovered institutional setup.
 
 ---
 

@@ -144,21 +144,27 @@ class EMAPullbackStrategy(BaseStrategy):
         entry_high = max(ctx.current_price, ema21_val)
         entry_mid  = (entry_low + entry_high) / 2
 
+        min_sl_dist = ctx.get_min_sl_distance(entry_price=entry_mid, atr=atr)
+
         if direction == "long":
             sl_anchor = _prev_swing_low_price(ctx.structure, ctx.current_price)
             if sl_anchor is None:
                 sl_anchor = entry_mid - (atr * 1.5)
-            stop_loss = sl_anchor - (atr * 0.25)
+            raw_sl = sl_anchor - (atr * 0.25)
+            sl_dist = entry_mid - raw_sl
+            stop_loss = entry_mid - max(sl_dist, min_sl_dist)
             invalidation = f"Close below prev swing low {sl_anchor:,.4f}"
         else:
             sl_anchor = _prev_swing_high_price(ctx.structure, ctx.current_price)
             if sl_anchor is None:
                 sl_anchor = entry_mid + (atr * 1.5)
-            stop_loss = sl_anchor + (atr * 0.25)
+            raw_sl = sl_anchor + (atr * 0.25)
+            sl_dist = raw_sl - entry_mid
+            stop_loss = entry_mid + max(sl_dist, min_sl_dist)
             invalidation = f"Close above prev swing high {sl_anchor:,.4f}"
 
         sl_distance = abs(entry_mid - stop_loss)
-        if sl_distance > atr * 3:
+        if sl_distance > atr * 3.5:
             return None
 
         if direction == "long":
