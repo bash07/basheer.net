@@ -787,3 +787,233 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
 
+# ── /wyckoff ──────────────────────────────────────────────────────────────────
+
+async def wyckoff_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/wyckoff [ticker] — On-demand Wyckoff accumulation/distribution diagnostics.
+
+    With a ticker: detailed breakdown of squeeze, volume flow, IBS, wick ratio, divergences, and Phase C/D triggers.
+    With no argument: scan active watchlist and show an overview summary table.
+    """
+    args = context.args or []
+    ticker = args[0].upper().strip() if args else None
+
+    if ticker:
+        msg = await update.message.reply_text(
+            f"🏛️ Evaluating Wyckoff order flow for `{ticker}`…",
+            parse_mode="Markdown",
+        )
+        try:
+            result_text = await _wyckoff_single(ticker)
+            await msg.edit_text(result_text, parse_mode="Markdown")
+        except Exception as e:
+            logger.error("[trader] /wyckoff %s: %s", ticker, e, exc_info=True)
+            try:
+                await msg.edit_text(
+                    f"❌ Wyckoff evaluation failed for `{ticker}`: {_safe_md(str(e))}",
+                    parse_mode="Markdown",
+                )
+            except Exception:
+                await msg.edit_text(f"❌ Wyckoff evaluation failed for {ticker}: {e}")
+    else:
+        msg = await update.message.reply_text(
+            "🏛️ Scanning watchlist for Wyckoff accumulation / distribution…",
+            parse_mode="Markdown",
+        )
+        try:
+            result_text = await _wyckoff_overview()
+            await msg.edit_text(result_text, parse_mode="Markdown")
+        except Exception as e:
+            logger.error("[trader] /wyckoff overview: %s", e, exc_info=True)
+            try:
+                await msg.edit_text(
+                    f"❌ Wyckoff scan failed: {_safe_md(str(e))}",
+                    parse_mode="Markdown",
+                )
+            except Exception:
+                await msg.edit_text(f"❌ Wyckoff scan failed: {e}")
+
+
+async def _wyckoff_single(ticker: str) -> str:
+    """Run Wyckoff order-flow diagnostics on a single ticker."""
+    import asyncio
+    from sqlalchemy import select
+    from core.db import get_db
+    from modules.finance.watchlist.models import WatchlistEntry
+    from .schemas import scan_mode_for, timeframe_triad_for
+    from .data import get_provider
+    from .indicators import compute_indicators
+
+    with get_db() as db:
+        entry = db.execute(
+            select(WatchlistEntry).where(WatchlistEntry.symbol == ticker)
+        ).scalar_one_or_none()
+
+    category = entry.category if entry else "us_stock"
+    mode = scan_mode_for(category)
+    triad = timeframe_triad_for(mode)
+
+    provider = get_provider(category)
+    loop = asyncio.get_event_loop()
+
+    df_htf, df_trigger = await asyncio.gather(
+        loop.run_in_executor(None, provider.fetch_ohlcv, ticker, triad.htf),
+        loop.run_in_executor(None, provider.fetch_ohlcv, ticker, triad.trigger),
+    )
+
+    if df_trigger is None or df_trigger.empty:
+        if entry is None:
+            return (
+                f"⚠️ `{ticker}` is not in your watchlist and no market data could be fetched\\.\n"
+                f"Add it first with `/watch {ticker}`\\."
+            )
+        return f"❌ Could not fetch data for `{ticker}`\\. Try again in a moment\\."
+
+    if df_htf is None or df_htf.empty:
+        df_htf = df_trigger
+
+    initial_cache = {"_mode": mode, "_category": category}
+    indicators = compute_indicators(["accum_dist", "rsi_14", "atr_14"], df_trigger, df_htf, initial_cache)
+
+    ad = indicators.get("accum_dist")
+    if ad is None:
+        return f"❌ Failed to calculate Wyckoff metrics for `{ticker}`\\."
+
+    current_price = float(df_trigger["Close"].iloc[-1])
+    atr_val = indicators.get("atr_14") or 1e-4
+    range_span = ad.range_high - ad.range_low
+    range_atr = (range_span / atr_val) if atr_val > 0 else 0.0
+
+    rsi_series = indicators.get("rsi_14")
+    rsi_val = float(rsi_series.iloc[-1]) if rsi_series is not None and len(rsi_series) > 0 else 50.0
+
+    # Interpretations
+    state_label = {
+        "accumulation": "🟢 ACCUMULATION",
+        "distribution": "🔴 DISTRIBUTION",
+        "neutral":      "⚪ NEUTRAL / BALANCED",
+    }.get(ad.state, ad.state.upper())
+
+    squeeze_status = "🔒 SQUEEZE ACTIVE" if ad.is_squeeze else "🔓 NORMAL EXPANSION"
+
+    obv_desc = (
+        "Institutional Inflow" if ad.obv_slope > 0.15
+        else "Distribution Outflow" if ad.obv_slope < -0.15
+        else "Neutral Volume"
+    )
+    ibs_desc = (
+        "Dip Buying Absorption" if ad.ibs_mean > 0.53
+        else "Rally Selling Rejection" if ad.ibs_mean < 0.47
+        else "Balanced Bar Closings"
+    )
+    wick_desc = (
+        "Heavy Lower Wick Demand" if ad.wick_ratio > 1.25
+        else "Heavy Upper Wick Supply" if ad.wick_ratio < 0.75
+        else "Symmetric Wicks"
+    )
+
+    spring_status = "⚡ *CONFIRMED (Phase C Shakeout)*" if ad.spring_detected else "—"
+    utad_status = "⚡ *CONFIRMED (Phase C Upthrust)*" if ad.upthrust_detected else "—"
+    abs_div_status = "✅ *Bullish Supply Depletion*" if ad.absorption_divergence else "—"
+    exh_div_status = "⚠️ *Bearish Demand Exhaustion*" if ad.exhaustion_divergence else "—"
+
+    lines = [
+        f"🏛️ *Wyckoff Diagnostics — `{ticker}`*",
+        f"Timeframe: `{triad.trigger.upper()}` | Mode: `{mode.upper()}`",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"State:        *{state_label}*",
+        f"Score:        `{ad.score:+.1f}` / 100",
+        f"Price:        `{current_price:,.4f}`",
+        f"Range Box:    `{ad.range_low:,.4f}` – `{ad.range_high:,.4f}`",
+        f"Squeeze:      *{squeeze_status}* (`{range_atr:.1f}× ATR`)",
+        "",
+        "📊 *Order Flow & Structural Metrics:*",
+        f"  • OBV Slope:       `{ad.obv_slope:+.2f}` ({obv_desc})",
+        f"  • IBS Mean:        `{ad.ibs_mean * 100:.1f}%` ({ibs_desc})",
+        f"  • Wick Ratio:      `{ad.wick_ratio:.2f}×` ({wick_desc})",
+        f"  • RSI(14):         `{rsi_val:.1f}`",
+        "",
+        "⚡ *Wyckoff Phase C / D Signals:*",
+        f"  • Spring Reclaim:   {spring_status}",
+        f"  • UTAD Upthrust:    {utad_status}",
+        f"  • Absorption Div:   {abs_div_status}",
+        f"  • Exhaustion Div:   {exh_div_status}",
+        "━━━━━━━━━━━━━━━━━━━━",
+    ]
+    return "\n".join(lines)
+
+
+async def _wyckoff_overview() -> str:
+    """Scan active watchlist tickers and format an overview table."""
+    import asyncio
+    from sqlalchemy import select
+    from core.db import get_db
+    from modules.finance.watchlist.models import WatchlistEntry
+    from .schemas import scan_mode_for, timeframe_triad_for
+    from .data import get_provider
+    from .indicators import compute_indicators
+
+    with get_db() as db:
+        entries = db.execute(select(WatchlistEntry)).scalars().all()
+
+    if not entries:
+        return "📭 No active tickers in your watchlist\\. Add tickers with `/watch <ticker>`\\."
+
+    loop = asyncio.get_event_loop()
+
+    async def _eval_entry(entry):
+        try:
+            mode = scan_mode_for(entry.category)
+            triad = timeframe_triad_for(mode)
+            provider = get_provider(entry.category)
+            df_trigger = await loop.run_in_executor(None, provider.fetch_ohlcv, entry.symbol, triad.trigger)
+            if df_trigger is None or df_trigger.empty or len(df_trigger) < 15:
+                return entry.symbol, None
+            initial_cache = {"_mode": mode, "_category": entry.category}
+            inds = compute_indicators(["accum_dist"], df_trigger, df_trigger, initial_cache)
+            return entry.symbol, inds.get("accum_dist")
+        except Exception as e:
+            logger.warning("[trader] Wyckoff overview failed for %s: %s", entry.symbol, e)
+            return entry.symbol, None
+
+    results = await asyncio.gather(*[_eval_entry(e) for e in entries], return_exceptions=True)
+
+    lines = [
+        "🏛️ *Wyckoff Market Diagnostics Overview*\n",
+        "```text",
+        f"{'Ticker':<12} {'State':<8} {'Score':>7} {'Squeeze':<7} {'Phase C/D':<10}",
+        "-" * 48,
+    ]
+
+    has_data = False
+    for res in results:
+        if isinstance(res, Exception) or not isinstance(res, tuple):
+            continue
+        ticker, ad = res
+        if ad is None:
+            continue
+        has_data = True
+        ticker_disp = ticker[:11]
+        state_disp = "ACCUM" if ad.state == "accumulation" else "DIST" if ad.state == "distribution" else "NEUTRAL"
+        score_disp = f"{ad.score:+.0f}"
+        squeeze_disp = "YES" if ad.is_squeeze else "NO"
+        if ad.spring_detected:
+            phase_disp = "Spring"
+        elif ad.upthrust_detected:
+            phase_disp = "UTAD"
+        elif ad.absorption_divergence:
+            phase_disp = "AbsDiv"
+        elif ad.exhaustion_divergence:
+            phase_disp = "ExhDiv"
+        else:
+            phase_disp = "None"
+        lines.append(f"{ticker_disp:<12} {state_disp:<8} {score_disp:>7} {squeeze_disp:<7} {phase_disp:<10}")
+
+    if not has_data:
+        return "⚠️ Could not retrieve sufficient market data for watchlist tickers\\."
+
+    lines.append("```")
+    lines.append("\n_Use `/wyckoff <ticker>` for deep order-flow diagnostics._")
+    return "\n".join(lines)
+
+

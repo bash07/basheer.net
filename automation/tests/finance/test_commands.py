@@ -869,5 +869,82 @@ class TestScanCommand:
         assert "Scanned `1` active ticker(s)" in text
 
 
+class TestWyckoffCommand:
+    """Tests for the /wyckoff diagnostic Telegram command."""
+
+    async def test_wyckoff_single_ticker(self, make_update, clean_db):
+        import pandas as pd
+        import numpy as np
+        from modules.finance.watchlist.models import WatchlistEntry
+        from modules.finance.trader.commands import wyckoff_command
+
+        clean_db.add(WatchlistEntry(symbol="BTC-USD", display_name="Bitcoin", category="crypto"))
+        clean_db.commit()
+
+        dates = pd.date_range("2026-01-01", periods=30, freq="1h")
+        mock_df = pd.DataFrame({
+            "Open": np.linspace(50000, 50100, 30),
+            "High": np.linspace(50050, 50150, 30),
+            "Low": np.linspace(49950, 50050, 30),
+            "Close": np.linspace(50020, 50120, 30),
+            "Volume": np.full(30, 500.0),
+        }, index=dates)
+
+        update, context = make_update(args=["BTC-USD"])
+
+        with patch("modules.finance.trader.data.BinanceProvider.fetch_ohlcv", return_value=mock_df):
+            await wyckoff_command(update, context)
+
+        sent_msg = update.message.reply_text.return_value
+        sent_msg.edit_text.assert_called_once()
+        text = sent_msg.edit_text.call_args[0][0]
+        assert "Wyckoff Diagnostics" in text
+        assert "BTC-USD" in text
+        assert "State:" in text
+        assert "Order Flow & Structural Metrics:" in text
+        assert "Wyckoff Phase C / D Signals:" in text
+
+    async def test_wyckoff_overview_empty_watchlist(self, make_update, clean_db):
+        from modules.finance.trader.commands import wyckoff_command
+
+        update, context = make_update(args=[])
+        await wyckoff_command(update, context)
+
+        sent_msg = update.message.reply_text.return_value
+        sent_msg.edit_text.assert_called_once()
+        text = sent_msg.edit_text.call_args[0][0]
+        assert "No active tickers in your watchlist" in text
+
+    async def test_wyckoff_overview_with_tickers(self, make_update, clean_db):
+        import pandas as pd
+        import numpy as np
+        from modules.finance.watchlist.models import WatchlistEntry
+        from modules.finance.trader.commands import wyckoff_command
+
+        clean_db.add(WatchlistEntry(symbol="BTC-USD", display_name="Bitcoin", category="crypto"))
+        clean_db.commit()
+
+        dates = pd.date_range("2026-01-01", periods=30, freq="1h")
+        mock_df = pd.DataFrame({
+            "Open": np.linspace(50000, 50100, 30),
+            "High": np.linspace(50050, 50150, 30),
+            "Low": np.linspace(49950, 50050, 30),
+            "Close": np.linspace(50020, 50120, 30),
+            "Volume": np.full(30, 500.0),
+        }, index=dates)
+
+        update, context = make_update(args=[])
+
+        with patch("modules.finance.trader.data.BinanceProvider.fetch_ohlcv", return_value=mock_df):
+            await wyckoff_command(update, context)
+
+        sent_msg = update.message.reply_text.return_value
+        sent_msg.edit_text.assert_called_once()
+        text = sent_msg.edit_text.call_args[0][0]
+        assert "Wyckoff Market Diagnostics Overview" in text
+        assert "BTC-USD" in text
+
+
+
 
 

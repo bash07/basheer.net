@@ -1,7 +1,7 @@
 """Finance/Trader module — auto-discovery entry point.
 
 Registers with the platform registry via register().
-Commands:  /scan, /setups, /traderbias, /confluence
+Commands:  /scan, /setups, /traderbias, /confluence, /wyckoff, /performance, /positions, /close, /account, /resume
 Scheduled: scan_all_tickers every 30 minutes (market-hours aware)
 """
 from __future__ import annotations
@@ -33,6 +33,7 @@ def register(bot_app, scheduler, authorized) -> dict:
         close_command,
         account_command,
         resume_command,
+        wyckoff_command,
     )
     from .jobs import scan_all_tickers
 
@@ -41,6 +42,7 @@ def register(bot_app, scheduler, authorized) -> dict:
     bot_app.add_handler(CommandHandler("setups",      setups_command,      filters=authorized))
     bot_app.add_handler(CommandHandler("traderbias",  traderbias_command,  filters=authorized))
     bot_app.add_handler(CommandHandler("confluence",  confluence_command,  filters=authorized))
+    bot_app.add_handler(CommandHandler("wyckoff",     wyckoff_command,     filters=authorized))
     bot_app.add_handler(CommandHandler("performance", performance_command, filters=authorized))
     bot_app.add_handler(CommandHandler("positions",   positions_command,   filters=authorized))
     bot_app.add_handler(CommandHandler("close",       close_command,       filters=authorized))

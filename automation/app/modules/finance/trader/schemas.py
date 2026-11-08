@@ -307,7 +307,22 @@ class TradeSetup(BaseModel):
             "continuation": "",
             "reversal":     " \\[REVERSAL\\]",
             "aggressive":   " \\[AGGRESSIVE\\]",
+            "accumulation": " 🏛️ \\[WYCKOFF ACCUMULATION\\]",
+            "distribution": " 🏛️ \\[WYCKOFF DISTRIBUTION\\]",
+            "trend":        " 🌊 \\[TREND EXPANSION\\]",
+            "breakdown":    " 🔻 \\[BREAKDOWN RETEST\\]",
         }.get(self.setup_type, "")
+
+        phase_badge = ""
+        inv_upper = (self.invalidation_note or "").upper()
+        if "SPRING" in inv_upper:
+            phase_badge = " *[PHASE C: SPRING RECLAIM]*"
+        elif "UPTHRUST" in inv_upper or "UTAD" in inv_upper:
+            phase_badge = " *[PHASE C: UTAD UPTHRUST]*"
+        elif "BREAKOUT" in inv_upper or "SOS" in inv_upper:
+            phase_badge = " *[PHASE D: SIGN OF STRENGTH]*"
+        elif "BREAKDOWN" in inv_upper or "SOW" in inv_upper:
+            phase_badge = " *[PHASE D: SIGN OF WEAKNESS]*"
 
         entry_str = f"`{self.entry_low:,.4f}` – `{self.entry_high:,.4f}`"
         sl_pct = abs(self.entry_mid - self.stop_loss) / self.entry_mid * 100
@@ -316,7 +331,7 @@ class TradeSetup(BaseModel):
         lines = [
             f"🎯 *Trade SETUP DETECTED{type_tag}*",
             "━━━━━━━━━━━━━━━━━━━━",
-            f"{dir_emoji} *{self.ticker}* — {self.setup_name} \\[{self.mode.upper()}\\]",
+            f"{dir_emoji} *{self.ticker}* — {self.setup_name} \\[{self.mode.upper()}\\]{phase_badge}",
             f"Direction: *{dir_label}*  |  {conf_emoji} Confidence: *{self.confluence.label.upper()}* "
             f"({self.confluence.score:.1f}/10)",
             "",
