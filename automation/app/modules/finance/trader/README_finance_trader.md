@@ -57,6 +57,7 @@ flowchart TD
         S6["EMA Pullback + Hidden Div"]
         S7["Creeping Drift\n(EMA Ribbon Grinding / Regime 7)"]
         S8["Wyckoff Accumulation\n(Absorption Coils, Springs & Breakouts / Regime 5)"]
+        S9["Wyckoff Distribution\n(UTAD Upthrusts & SOW Breakdowns / Regime 5)"]
         CTX --> S1
         CTX --> S2
         CTX --> S3
@@ -65,6 +66,7 @@ flowchart TD
         CTX --> S6
         CTX --> S7
         CTX --> S8
+        CTX --> S9
     end
 
     subgraph ExecutionLayer["Order Management System (OMS - oms/)"]

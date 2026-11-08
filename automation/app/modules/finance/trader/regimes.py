@@ -141,6 +141,7 @@ RECOMMENDED_SETUPS_BY_REGIME: dict[str, Set[str]] = {
     REGIME_PARABOLIC: set(),
     REGIME_SQUEEZE: {
         "Wyckoff Accumulation",
+        "Wyckoff Distribution",
     },
     REGIME_BROADENING: set(),
     REGIME_CREEPING_DRIFT: {
