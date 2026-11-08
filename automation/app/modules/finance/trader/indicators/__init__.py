@@ -224,7 +224,7 @@ def list_indicators() -> list[str]:
 def _load_builtins() -> None:
     _modules = [
         "rsi", "ema", "atr", "structure", "volume_profile", "bias_indicator",
-        "macd", "adx", "bollinger", "stochastic", "sma",
+        "macd", "adx", "bollinger", "stochastic", "sma", "accumulation_distribution",
     ]
     for mod_name in _modules:
         try:

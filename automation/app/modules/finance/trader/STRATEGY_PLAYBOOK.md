@@ -12,6 +12,7 @@ This playbook documents the empirical backtest performance, structural edge, fai
 | **OB Retracement** | Trend Continuation | **Orderly Trend Expansion**<br>(ADX $\ge 18$, structural BOS + deep retrace) | Moderate (4–5 / 1k bars) | 2.20× – 3.00× | 40% – 52% | High payoff, asymmetric compounding |
 | **Liquidity Sweep + FVG** | Liquidity Hunt + Imbalance | **High-Volatility Stop Hunts**<br>(Pro-trend SSL/BSL sweep + strong displacement) | Selective (0.5–1 / 1k bars) | 2.50× – 4.80× | 50% – 70% | High-conviction sniper execution |
 | **Displacement + FVG** | Imbalance Fill | **Impulse Expansion**<br>(Wide displacement candle + fair value gap) | Moderate (3–5 / 1k bars) | 1.50× – 2.50× | 45% – 55% | Fast momentum continuation |
+| **Wyckoff Accumulation** | Institutional Absorption | **Volatility Squeeze / Coil (Regime 5)**<br>(Tight range, OBV/IBS absorption divergence, Spring shakeout) | Selective (1–3 / 1k bars) | 1.80× – 3.00× | 50% – 65% | Pre-markup absorption & springboard breakouts |
 | **Breakdown Retest** | Market Structure Transition | **Bearish Rollovers / Breakdown Distribution**<br>(BOS/CHoCH breaking key swing low + retest) | Moderate (4–6 / 1k bars) | 1.80× – 3.00× | 48% – 58% | Asymmetric short rollover edge |
 | **Creeping Drift** | Ribbon Trend Following | **Creeping Drift / Melt-Up (Regime 7)**<br>(Persistent EMA 8/21 slope, low-mod ADX 15–32) | Moderate (3–5 / 1k bars) | 1.80× – 3.00× | 50% – 60% | Captures low-vol grinding trends (e.g. Nifty) |
 | **EMA Pullback + Hidden Div** | Momentum Continuation | **Strong Momentum Runaway**<br>(EMA 21/50 stack + RSI hidden divergence) | Low (0.5–1 / 1k bars) | 1.80× – 2.50× | 45% – 55% | Trend-following momentum runner |
@@ -106,9 +107,10 @@ flowchart TD
 - **System Defense:** Gate 2 Momentum Deceleration Guard rejects any entry if MTF RSI is in extreme parabolic territory ($\text{RSI} < 25$ for longs, $> 75$ for shorts).
 
 #### Regime 5: Volatility Compression / Squeeze *(The Calm Before the Storm)*
-- **Microstructure:** Energy coiling into tight price equilibrium. Volatility drops to statistical extremes before explosive expansion.
-- **Failure Mode:** Range sweeps triggered in a squeeze will get run over because the impending breakout will not mean-revert.
-- **System Defense:** Minimum range width filter ($\text{Range} \ge 1.5\times\text{ATR}$) automatically rejects coiling micro-ranges.
+- **Microstructure:** Energy coiling into tight price equilibrium. Volatility drops to statistical extremes (BB inside Keltner Channels) while institutional volume either absorbs floating supply (Accumulation) or quietly unloads inventory (Distribution).
+- **Failure Mode:** Traditional range sweeps or continuation setups triggered in a squeeze will get run over because the impending breakout will not mean-revert.
+- **Why Current Strategies Win:** **Wyckoff Accumulation** monitors supply absorption (OBV divergence, Internal Bar Strength, lower-wick defense) and triggers on Phase C Springs (shakeouts below the floor) or Sign of Strength (SOS) breakouts from the squeeze.
+- **System Defense:** Standard continuation strategies are prohibited until the squeeze expands into Regime 1 (Trend Expansion).
 
 #### Regime 6: Broadening Megaphone *(Expanding Chaos Chop)*
 - **Microstructure:** Extreme participant disagreement. High volatility without directional conviction.

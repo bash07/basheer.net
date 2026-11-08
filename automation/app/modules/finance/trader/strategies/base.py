@@ -197,6 +197,11 @@ class StrategyContext:
             "d": self.indicators.get("stoch_d"),
         }
 
+    @property
+    def accum_dist(self):
+        """Accumulation / Distribution analysis result."""
+        return self.indicators.get("accum_dist")
+
     # ── Parametric Accessors ───────────────────────────────────────────────────
 
     def ema(self, span: int):

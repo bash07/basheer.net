@@ -139,7 +139,9 @@ RECOMMENDED_SETUPS_BY_REGIME: dict[str, Set[str]] = {
         "Range Liquidity Sweep",
     },
     REGIME_PARABOLIC: set(),
-    REGIME_SQUEEZE: set(),
+    REGIME_SQUEEZE: {
+        "Wyckoff Accumulation",
+    },
     REGIME_BROADENING: set(),
     REGIME_CREEPING_DRIFT: {
         "EMA Pullback + Hidden Div",
