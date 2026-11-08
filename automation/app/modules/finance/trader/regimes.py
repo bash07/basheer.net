@@ -130,6 +130,7 @@ RECOMMENDED_SETUPS_BY_REGIME: dict[str, Set[str]] = {
         "OB Retracement",
         "Liquidity Sweep + FVG",
         "Displacement + FVG",
+        "Breakdown Retest",
     },
     REGIME_RANGE_CHOP: {
         "Range Liquidity Sweep",
@@ -145,6 +146,7 @@ RECOMMENDED_SETUPS_BY_REGIME: dict[str, Set[str]] = {
     },
     REGIME_BROADENING: set(),
     REGIME_CREEPING_DRIFT: {
+        "Creeping Drift",
         "EMA Pullback + Hidden Div",
     },
     REGIME_MACRO_NEWS: set(),
