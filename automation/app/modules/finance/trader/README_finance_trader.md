@@ -262,7 +262,7 @@ trades
 
 | Command | Arguments | Description |
 |---|---|---|
-| `/scan` | `[ticker]` | Run institutional 3-tier triad scan on full watchlist or a specific ticker with interactive OMS approval buttons and regime diagnostics. |
+| `/scan` | `[ticker] [--force] [--all]` | Run institutional 3-tier triad scan on full watchlist or a specific ticker with interactive OMS approval buttons. Flags: `--force` (`-f`) bypasses market hours; `--all` (`-a`) evaluates all strategies bypassing screener restrictions. |
 | `/setups` | None | List recent trade setups detected in the past 48 hours. |
 | `/positions` | None | Live open positions table with current price, unrealized P&L (\$), and unrealized $R:R$. |
 | `/close` | `<position_id>` | Manually close an open position at the current market price. |
@@ -274,10 +274,13 @@ trades
 
 ### 5.1. Live Scanner Pipeline (`/scan` & Scheduled Jobs)
 
-The `/scan` command operates in two modes:
+The `/scan` command operates in two modes with optional flags:
+- `--force` (`-f`): Bypasses market-hours checks, forcing a scan across the entire watchlist off-hours.
+- `--all` (`-a`): Bypasses screener strategy restrictions, evaluating all enabled strategies on the target(s).
 
-#### 1. Single-Ticker On-Demand Scan (`/scan <ticker>`)
+#### 1. Single-Ticker On-Demand Scan (`/scan <ticker> [--all]`)
 * **Market-Hours Independent**: Forces an immediate scan on the specified asset regardless of market open status (ideal for crypto 24/7 or off-hours equity technical analysis).
+* **Strategy Gating**: Honors `strategy_types` from the watchlist by default; passing `--all` overrides this to evaluate all 9 strategies.
 * **3-Tier Multi-Timeframe Triad Resolution**: Dynamically maps asset category to its canonical `TimeframeTriad`:
   * **Crypto (`intraday`)**: `4h` (HTF "Where") $\rightarrow$ `15m` (MTF "When") $\rightarrow$ `5m` (Trigger "How") via native `BinanceProvider`.
   * **Equities / Forex (`swing`)**: `1wk` (HTF "Where") $\rightarrow$ `4h` (MTF "When") $\rightarrow$ `1h` (Trigger "How") via `YFinanceProvider`.
@@ -289,9 +292,10 @@ The `/scan` command operates in two modes:
   * Dispatches Telegram photo alert with **`✅ Approve`** and **`❌ Dismiss`** inline buttons.
   * Tapping **Approve** immediately routes the order into the configured OMS broker (`PaperBroker` or `BinanceBroker` Spot/Futures).
 
-#### 2. Full Watchlist Automated Scan (`/scan` with no arguments)
-* Scans all symbols currently tracked in the database watchlist across open market categories (scheduled every 30 minutes via APScheduler).
-* **Market-Hours Awareness**: Checks `is_market_open(category)` before downloading data; if all markets are closed, alerts the user with closed category details and recommends `/scan <ticker>`.
+#### 2. Full Watchlist Automated Scan (`/scan [--force] [--all]`)
+* Scans all symbols currently tracked in the database watchlist (scheduled every 30 minutes via APScheduler).
+* **Market-Hours Awareness**: Checks `is_market_open(category)` before downloading data; if all markets are closed, alerts the user. Can be overridden with `/scan --force`.
+* **Strategy-Aware Gating**: Only evaluates the specific strategy types mapped to each ticker by the screener, unless `/scan --all` is supplied.
 * **Batch Triad Processing**: Asynchronously batches HTF, MTF, and Trigger klines across providers to optimize throughput and rate limits.
 * **24-Hour Deduplication**: Deduplicates incoming setups against previous signals within a 24-hour window (`ticker:setup_name:direction`).
 * Dispatches chart alerts with one-tap Approve/Dismiss buttons for every newly discovered institutional setup.

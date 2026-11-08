@@ -63,7 +63,7 @@ python main.py
 ### 2.1. Trading & Order Management System (`finance/trader`)
 | Command | Example | Description |
 |---|---|---|
-| `/scan [ticker]` | `/scan BTC-USD` | Runs 3-tier MTF triad SMC scan on watchlist or specific ticker. Generates annotated charts with inline Approve/Dismiss OMS buttons and regime diagnostics. |
+| `/scan [ticker] [--force] [--all]` | `/scan TECHM.NS --all` or `/scan --force` | Runs 3-tier MTF triad SMC scan. Flags: `--force` (`-f`) forces full watchlist scan off-hours; `--all` (`-a`) evaluates all strategies bypassing screener restrictions. |
 | `/setups` | `/setups` | Shows high-probability trade alerts detected in the last 48 hours. |
 | `/positions` | `/positions` | Live open positions table with live price, quantity, and unrealized P&L / R:R. |
 | `/close <id>` | `/close 1` | Manually exits an open position at current market price. |
@@ -95,6 +95,9 @@ python main.py
 | `/signals` | `/signals` | Lists recent technical alerts logged in `SignalLog`. |
 | `/fundamental <ticker> [--method m]` | `/fundamental MSFT --method lynch` | Full fundamental screen (`graham`, `lynch`, `buffett`) + 4Q margin check + LLM analyst verdict. |
 | `/screen [--method m]` | `/screen lynch` | Screens all watchlist stocks against selected valuation strategy (`graham`, `lynch`, `buffett`). |
+| `/screen_run [cadence] [--dry-run]` | `/screen_run weekly` | Discovers & populates Indian Nifty 100 setups across Concepts A–E (`weekly` TA or `monthly` FA). |
+| `/screen_status` | `/screen_status` | Shows active dynamic candidates, strategy affinities, and remaining TTL hours. |
+| `/screen_purge [weekly|monthly|all]` | `/screen_purge weekly` | Clears dynamic candidates from watchlist without touching permanent manual entries. |
 | `/earnings [days]` | `/earnings 14` | Lists watched stock tickers reporting earnings within N days (default: 7). |
 
 ### 2.4. Core Controls, Blog & Uptime (`core`, `blog`, `monitor`)
