@@ -28,7 +28,10 @@ _OHLCV_PARAMS: dict[str, tuple[str, str]] = {
 _RESAMPLE_4H = True
 
 
-async def scan_all_tickers() -> None:
+async def scan_all_tickers(
+    ignore_market_hours: bool = False,
+    force_all_strategies: bool = False,
+) -> dict:
     """Proactive Trade setup scanner — called every 30 minutes by APScheduler."""
     from sqlalchemy import select
     from core.db import get_db
@@ -43,8 +46,13 @@ async def scan_all_tickers() -> None:
     with get_db() as db:
         all_entries = db.execute(select(WatchlistEntry)).scalars().all()
 
-    active = [e for e in all_entries if is_market_open(e.category)]
-    closed_categories = {e.category for e in all_entries if not is_market_open(e.category)}
+    if ignore_market_hours:
+        active = all_entries
+        closed_categories = set()
+    else:
+        active = [e for e in all_entries if is_market_open(e.category)]
+        closed_categories = {e.category for e in all_entries if not is_market_open(e.category)}
+
     if not active:
         logger.debug("[trader] scan_all_tickers: no open markets right now")
         return {
@@ -54,7 +62,8 @@ async def scan_all_tickers() -> None:
             "closed_categories": closed_categories,
         }
 
-    logger.info("[trader] scan_all_tickers: checking %d tickers", len(active))
+    logger.info("[trader] scan_all_tickers: checking %d tickers (force_hours=%s, force_all=%s)",
+                len(active), ignore_market_hours, force_all_strategies)
 
     # 2. Load recent signals for deduplication
     cutoff = datetime.now(timezone.utc) - timedelta(hours=_DEDUP_HOURS)
@@ -111,9 +120,11 @@ async def scan_all_tickers() -> None:
 
             # Check if entry has allowed strategy types specified (e.g. from screener)
             allowed_strategies = (
-                [st.strip() for st in entry.strategy_types.split(",") if st.strip()]
-                if getattr(entry, "strategy_types", None)
-                else None
+                None if force_all_strategies else (
+                    [st.strip() for st in entry.strategy_types.split(",") if st.strip()]
+                    if getattr(entry, "strategy_types", None)
+                    else None
+                )
             )
 
             try:

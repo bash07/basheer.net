@@ -213,3 +213,40 @@ async def test_scan_single_respects_strategy_types(clean_db):
                 assert mock_check_all.called
                 _, kwargs = mock_check_all.call_args
                 assert kwargs.get("allowed_setups") == ["CreepingDrift", "DisplacementFVG"]
+
+                # Now test force_all_strategies=True -> allowed_setups must be None
+                mock_check_all.reset_mock()
+                await _scan_single("TECHM.NS", force_all_strategies=True)
+                assert mock_check_all.called
+                _, kwargs2 = mock_check_all.call_args
+                assert kwargs2.get("allowed_setups") is None
+
+
+@pytest.mark.asyncio
+async def test_scan_command_flags(make_update):
+    """Verify scan_command parses --force and --all flags correctly."""
+    from modules.finance.trader.commands import scan_command
+
+    # 1. /scan --force -> scan_all_tickers(ignore_market_hours=True, force_all_strategies=False)
+    up1, ctx1 = make_update(args=["--force"])
+    with patch("modules.finance.trader.jobs.scan_all_tickers", return_value={"scanned": 15, "new_setups": 0}) as mock_scan_all:
+        await scan_command(up1, ctx1)
+        assert mock_scan_all.called
+        assert mock_scan_all.call_args[1].get("ignore_market_hours") is True
+        assert mock_scan_all.call_args[1].get("force_all_strategies") is False
+
+    # 2. /scan -f -a -> scan_all_tickers(ignore_market_hours=True, force_all_strategies=True)
+    up2, ctx2 = make_update(args=["-f", "-a"])
+    with patch("modules.finance.trader.jobs.scan_all_tickers", return_value={"scanned": 15, "new_setups": 0}) as mock_scan_all:
+        await scan_command(up2, ctx2)
+        assert mock_scan_all.called
+        assert mock_scan_all.call_args[1].get("ignore_market_hours") is True
+        assert mock_scan_all.call_args[1].get("force_all_strategies") is True
+
+    # 3. /scan TECHM.NS --all -> _scan_single("TECHM.NS", force_all_strategies=True)
+    up3, ctx3 = make_update(args=["TECHM.NS", "--all"])
+    with patch("modules.finance.trader.commands._scan_single", return_value="Result") as mock_scan_single:
+        await scan_command(up3, ctx3)
+        assert mock_scan_single.called
+        assert mock_scan_single.call_args[0][0] == "TECHM.NS"
+        assert mock_scan_single.call_args[1].get("force_all_strategies") is True

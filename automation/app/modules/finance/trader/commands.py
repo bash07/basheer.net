@@ -33,20 +33,26 @@ def _safe_md(text: str) -> str:
 # ── /scan ─────────────────────────────────────────────────────────────────────
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/scan [ticker] — Force an immediate trade scan.
+    """/scan [ticker] [--force|-f] [--all|-a] — Force an immediate trade scan.
 
-    With no argument: scans the full watchlist (same as the scheduled job).
-    With a ticker:    scans only that single ticker regardless of market hours.
+    Flags:
+      --force, -f: Force scan the full watchlist off-hours, bypassing market-hours checks.
+      --all, -a:   Evaluate ALL enabled strategies, bypassing screener strategy constraints.
     """
     args = context.args or []
-    single_ticker = args[0].upper().strip() if args else None
+    flags = {a.lower() for a in args if a.startswith("-")}
+    force_hours = bool({"--force", "-f", "--ignore-hours"}.intersection(flags))
+    force_all = bool({"--all", "-a", "--force-all", "--all-strategies"}.intersection(flags))
+    positional = [a for a in args if not a.startswith("-")]
+    single_ticker = positional[0].upper().strip() if positional else None
 
     if single_ticker:
+        label = f"`{single_ticker}`" + (" (ALL strategies)" if force_all else "")
         msg = await update.message.reply_text(
-            f"🔍 Scanning `{single_ticker}` for Trade setups…", parse_mode="Markdown"
+            f"🔍 Scanning {label} for Trade setups…", parse_mode="Markdown"
         )
         try:
-            result_text = await _scan_single(single_ticker)
+            result_text = await _scan_single(single_ticker, force_all_strategies=force_all)
             await msg.edit_text(result_text, parse_mode="Markdown")
         except Exception as e:
             logger.error("[trader] /scan %s: %s", single_ticker, e, exc_info=True)
@@ -55,15 +61,22 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             except Exception:
                 await msg.edit_text(f"❌ Scan failed for {single_ticker}: {e}")
     else:
-        msg = await update.message.reply_text("🔍 Scanning full watchlist for Trade setups…")
+        desc_parts = []
+        if force_hours:
+            desc_parts.append("FORCE off-hours")
+        if force_all:
+            desc_parts.append("ALL strategies")
+        flag_desc = f" ({', '.join(desc_parts)})" if desc_parts else ""
+
+        msg = await update.message.reply_text(f"🔍 Scanning full watchlist for Trade setups{flag_desc}…")
         try:
             from .jobs import scan_all_tickers
-            stats = await scan_all_tickers()
+            stats = await scan_all_tickers(ignore_market_hours=force_hours, force_all_strategies=force_all)
             if stats and stats.get("scanned", 0) == 0:
                 closed = ", ".join(sorted(stats.get("closed_categories", []))) or "All monitored markets"
                 await msg.edit_text(
                     f"⚠️ No financial markets currently open for watchlist tickers ({closed} closed).\n"
-                    "Use `/scan <ticker>` to scan a specific symbol off-hours.",
+                    "Use `/scan --force` to scan all watchlist tickers off-hours, or `/scan <ticker>` for a single ticker.",
                     parse_mode="Markdown",
                 )
             elif stats:
@@ -71,12 +84,12 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 setups_count = stats.get("new_setups", 0)
                 setup_msg = f"{setups_count} new setup(s) sent as alerts." if setups_count > 0 else "No new setups found."
                 await msg.edit_text(
-                    f"✅ Full watchlist scan complete.\n"
+                    f"✅ Full watchlist scan complete{flag_desc}.\n"
                     f"Scanned `{scanned}` active ticker(s). {setup_msg}",
                     parse_mode="Markdown",
                 )
             else:
-                await msg.edit_text("✅ Full watchlist scan complete. Any setups have been sent as alerts.")
+                await msg.edit_text(f"✅ Full watchlist scan complete{flag_desc}. Any setups have been sent as alerts.")
         except Exception as e:
             logger.error("[trader] /scan (full): %s", e, exc_info=True)
             try:
@@ -85,7 +98,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 await msg.edit_text(f"❌ Full scan failed: {e}")
 
 
-async def _scan_single(ticker: str) -> str:
+async def _scan_single(ticker: str, force_all_strategies: bool = False) -> str:
     """Run the trading scanner for a single ticker and return a formatted result."""
     import asyncio
     from datetime import datetime, timezone
@@ -149,9 +162,11 @@ async def _scan_single(ticker: str) -> str:
 
     # Check if entry has allowed strategy types specified (e.g. from screener)
     allowed_strategies = (
-        [st.strip() for st in entry.strategy_types.split(",") if st.strip()]
-        if getattr(entry, "strategy_types", None)
-        else None
+        None if force_all_strategies else (
+            [st.strip() for st in entry.strategy_types.split(",") if st.strip()]
+            if getattr(entry, "strategy_types", None)
+            else None
+        )
     )
 
     # Evaluate 3-tier triad setups

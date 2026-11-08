@@ -70,7 +70,7 @@ def register(bot_app, scheduler, authorized) -> dict:
         "description": DESCRIPTION,
         "commands":    ["scan", "setups", "traderbias", "confluence", "wyckoff", "performance", "positions", "close", "account", "resume"],
         "help": [
-            "`/scan [ticker]`       — Force trade scan on full watchlist or one ticker",
+            "`/scan [ticker] [--force] [--all]` — scan watchlist/ticker (flags: --force off-hours, --all all strategies)",
             "`/setups`              — List active setups from the last 48 hours",
             "`/traderbias <ticker>` — HTF RSI hidden divergence bias breakdown",
             "`/confluence <ticker>` — Volume profile (POC/VAH/VAL) + S/R levels",
