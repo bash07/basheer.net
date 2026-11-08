@@ -140,8 +140,10 @@ class YFinanceProvider(DataProvider):
         cache_key = f"{self._CACHE_PREFIX}{symbol}:{interval}:{period or ''}:{start}:{end}"
         alt_key = f"ohlcv:{symbol}:{period or ''}:{interval}"
         if ticker_cache:
-            cached = ticker_cache.get(cache_key) or ticker_cache.get(alt_key)
-            if cached is not None:
+            cached = ticker_cache.get(cache_key)
+            if cached is None:
+                cached = ticker_cache.get(alt_key)
+            if cached is not None and not cached.empty:
                 return cached
 
         df = self._download_one(symbol, fetch_interval, period, start, end)

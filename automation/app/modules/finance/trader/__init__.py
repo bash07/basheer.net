@@ -68,12 +68,13 @@ def register(bot_app, scheduler, authorized) -> dict:
     return {
         "name":        NAME,
         "description": DESCRIPTION,
-        "commands":    ["scan", "setups", "traderbias", "confluence", "performance", "positions", "close", "account", "resume"],
+        "commands":    ["scan", "setups", "traderbias", "confluence", "wyckoff", "performance", "positions", "close", "account", "resume"],
         "help": [
             "`/scan [ticker]`       — Force trade scan on full watchlist or one ticker",
             "`/setups`              — List active setups from the last 48 hours",
             "`/traderbias <ticker>` — HTF RSI hidden divergence bias breakdown",
             "`/confluence <ticker>` — Volume profile (POC/VAH/VAL) + S/R levels",
+            "`/wyckoff [ticker]`    — Wyckoff accumulation/distribution diagnostics",
             "`/positions`           — List active open positions with live P&L",
             "`/close <id>`          — Manually exit an open position at market price",
             "`/account`             — Paper trading account balance, equity & stats",
