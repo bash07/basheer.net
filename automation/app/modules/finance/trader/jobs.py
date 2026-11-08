@@ -109,6 +109,13 @@ async def scan_all_tickers() -> None:
             except Exception as e:
                 logger.warning("[trader] OMS position update failed for %s: %s", entry.symbol, e)
 
+            # Check if entry has allowed strategy types specified (e.g. from screener)
+            allowed_strategies = (
+                [st.strip() for st in entry.strategy_types.split(",") if st.strip()]
+                if getattr(entry, "strategy_types", None)
+                else None
+            )
+
             try:
                 setups = check_all(
                     entry.symbol,
@@ -118,6 +125,7 @@ async def scan_all_tickers() -> None:
                     df_mtf=mtf_df,
                     df_trigger=trigger_df,
                     mode=mode,
+                    allowed_setups=allowed_strategies,
                 )
             except Exception as e:
                 logger.warning("[trader] check_all failed for %s: %s", entry.symbol, e)

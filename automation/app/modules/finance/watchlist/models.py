@@ -22,6 +22,13 @@ class WatchlistEntry(Base):
     category:     Mapped[str]      = mapped_column(String(30), index=True)
     added_at:     Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
+    # --- Dynamic Screener & Strategy Routing Metadata ---
+    source:         Mapped[str]                = mapped_column(String(30), default="manual", index=True)
+    cadence:        Mapped[str]                = mapped_column(String(20), default="permanent")
+    concept_tags:   Mapped[Optional[str]]      = mapped_column(String(100), nullable=True)
+    strategy_types: Mapped[Optional[str]]      = mapped_column(String(250), nullable=True)
+    expires_at:     Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+
 
 class PriceAlert(Base):
     __tablename__ = "price_alerts"

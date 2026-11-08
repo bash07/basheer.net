@@ -56,11 +56,12 @@ def check_all(
     df_mtf=None,
     df_trigger=None,
     mode: Optional[str] = None,
+    allowed_setups: Optional[list[str] | set[str]] = None,
 ) -> list:
     """Run all enabled strategies for a ticker and return valid TradeSetup objects.
 
     Supports both legacy 2-tier (df_htf, df_ltf) and 3-tier (df_htf, df_mtf, df_trigger)
-    multi-timeframe matrix models.
+    multi-timeframe matrix models. Optionally filters strategies by allowed_setups.
     """
     from .schemas import scan_mode_for
     from .indicators import compute_indicators
@@ -69,14 +70,36 @@ def check_all(
 
     mode = mode or scan_mode_for(category)
 
+    # Filter by allowed_setups if provided
+    norm_allowed: Optional[set[str]] = None
+    if allowed_setups is not None:
+        norm_allowed = {
+            "".join(c for c in str(name).lower() if c.isalnum())
+            for name in allowed_setups
+            if name
+        }
+
     # Identify enabled strategies (respecting disabled list and supported styles)
+    def _is_allowed(s) -> bool:
+        if norm_allowed is None:
+            return True
+        s_variants = {
+            "".join(c for c in s.name.lower() if c.isalnum()),
+            "".join(c for c in s.__class__.__name__.lower() if c.isalnum()),
+        }
+        cls_name = s.__class__.__name__
+        if cls_name.endswith("Strategy"):
+            s_variants.add("".join(c for c in cls_name[:-8].lower() if c.isalnum()))
+        return bool(s_variants.intersection(norm_allowed))
+
     enabled = [
         s for s in get_all_strategies()
         if s.name not in DISABLED_SETUPS
         and (not getattr(s, "supported_styles", None) or mode in s.supported_styles)
+        and _is_allowed(s)
     ]
     if not enabled:
-        logger.debug("[trader.setups] %s: all strategies disabled or unsuited for style %s — skipping", ticker, mode)
+        logger.debug("[trader.setups] %s: all strategies disabled, filtered or unsuited for style %s — skipping", ticker, mode)
         return []
 
     # Collect the union of all required indicators

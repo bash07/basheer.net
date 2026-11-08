@@ -7,6 +7,7 @@
 > 📚 **Related Documentation:**
 > - 🏛️ **System Architecture:** [../../SYSTEM_ARCHITECTURE.md](../../SYSTEM_ARCHITECTURE.md) — Comprehensive multi-module architecture.
 > - 📋 **Watchlist Submodule Guide:** [watchlist/README_finance_watchlist.md](watchlist/README_finance_watchlist.md) — Asset registry, batch pricing & price alerts.
+> - 🔍 **Market Screener Submodule Guide:** [screener/README_finance_screener.md](screener/README_finance_screener.md) — Weekly TA & Monthly FA dynamic candidate discovery.
 > - 📊 **Technical Analysis Submodule Guide:** [technical/README_finance_technical.md](technical/README_finance_technical.md) — Indicators, divergence detection & charts.
 > - 📈 **Fundamental Analysis Submodule Guide:** [fundamental/README_finance_fundamental.md](fundamental/README_finance_fundamental.md) — Graham value screening & AI verdicts.
 > - 🎯 **Trading Engine & OMS Specification:** [trader/README_finance_trader.md](trader/README_finance_trader.md) — Institutional SMC scanner & OMS.

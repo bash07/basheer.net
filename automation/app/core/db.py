@@ -85,6 +85,21 @@ def init_db() -> None:
                 conn.execute(text("ALTER TABLE price_alerts ADD COLUMN triggered_at DATETIME"))
             conn.commit()
 
+    if "watchlist_entries" in inspector.get_table_names():
+        columns = [c["name"] for c in inspector.get_columns("watchlist_entries")]
+        with engine.connect() as conn:
+            if "source" not in columns:
+                conn.execute(text("ALTER TABLE watchlist_entries ADD COLUMN source VARCHAR(30) DEFAULT 'manual'"))
+            if "cadence" not in columns:
+                conn.execute(text("ALTER TABLE watchlist_entries ADD COLUMN cadence VARCHAR(20) DEFAULT 'permanent'"))
+            if "concept_tags" not in columns:
+                conn.execute(text("ALTER TABLE watchlist_entries ADD COLUMN concept_tags VARCHAR(100)"))
+            if "strategy_types" not in columns:
+                conn.execute(text("ALTER TABLE watchlist_entries ADD COLUMN strategy_types VARCHAR(250)"))
+            if "expires_at" not in columns:
+                conn.execute(text("ALTER TABLE watchlist_entries ADD COLUMN expires_at DATETIME"))
+            conn.commit()
+
     # Auto-migration: Migrate paper_account.json to account_balances table if present
     inspector = inspect(engine)
     if "account_balances" in inspector.get_table_names():
