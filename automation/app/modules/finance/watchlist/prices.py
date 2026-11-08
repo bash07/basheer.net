@@ -108,6 +108,19 @@ def fetch_prices_batch(symbols: list[str]) -> dict[str, dict | None]:
     return results
 
 
+def render_range_bar(current: float, low: float | None, high: float | None, length: int = 10) -> str:
+    """Render an ASCII position gauge for price within 52W range."""
+    if low is None or high is None or high <= low or current < 0:
+        return ""
+    pos = (current - low) / (high - low)
+    pos = max(0.0, min(1.0, pos))
+    idx = int(round(pos * (length - 1)))
+    bar = ["─"] * length
+    bar[idx] = "●"
+    pct = pos * 100
+    return f"{low:,.2f} {''.join(bar)} {high:,.2f} ({pct:.0f}%)"
+
+
 def format_price_card(info: dict) -> str:
     """Format a price_detail dict as a Telegram Markdown message."""
     pct = info["change_pct"]
@@ -120,7 +133,11 @@ def format_price_card(info: dict) -> str:
     if info.get("day_high") and info.get("day_low"):
         lines.append(f"📊 Day  `{info['day_low']:,.4f}` — `{info['day_high']:,.4f}`")
     if info.get("week52_high") and info.get("week52_low"):
-        lines.append(f"📅 52W  `{info['week52_low']:,.4f}` — `{info['week52_high']:,.4f}`")
+        gauge = render_range_bar(info["price"], info["week52_low"], info["week52_high"])
+        if gauge:
+            lines.append(f"📅 52W  `{gauge}`")
+        else:
+            lines.append(f"📅 52W  `{info['week52_low']:,.4f}` — `{info['week52_high']:,.4f}`")
     return "\n".join(lines)
 
 

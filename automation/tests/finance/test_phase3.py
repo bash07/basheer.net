@@ -158,7 +158,7 @@ async def test_watchlist_trailing_alerts(clean_db, monkeypatch):
 
     # Mock notify
     notified = []
-    async def _mock_notify(msg, priority="normal"):
+    async def _mock_notify(msg, *args, **kwargs):
         notified.append(msg)
     monkeypatch.setattr("modules.finance._shared.notify.notify", _mock_notify)
 

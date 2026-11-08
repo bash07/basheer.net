@@ -5,6 +5,7 @@ Tables:
   price_alerts      — per-ticker threshold alerts (checked every 5 min by jobs.py)
 """
 from datetime import datetime, timezone
+from typing import Optional
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy import String, Float, Boolean, DateTime
 from core.db import Base
@@ -28,10 +29,11 @@ class PriceAlert(Base):
     id:                    Mapped[int]      = mapped_column(primary_key=True)
     symbol:                Mapped[str]      = mapped_column(String(30), index=True)
     condition:             Mapped[str]      = mapped_column(String(2))   # ">" or "<"
-    threshold:             Mapped[float]    = mapped_column(Float)
-    triggered:             Mapped[bool]     = mapped_column(Boolean, default=False)
-    created_at:            Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    alert_type:            Mapped[str]      = mapped_column(String(20), default="static") # "static" | "trailing_pct"
-    trail_pct:             Mapped[float]    = mapped_column(Float, nullable=True, default=None) # e.g. -5.0 or 10.0
-    trail_reference_price: Mapped[float]    = mapped_column(Float, nullable=True, default=None) # peak or trough observed
+    threshold:             Mapped[float]              = mapped_column(Float)
+    triggered:             Mapped[bool]               = mapped_column(Boolean, default=False, index=True)
+    triggered_at:          Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, default=None)
+    created_at:            Mapped[datetime]           = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    alert_type:            Mapped[str]                = mapped_column(String(20), default="static") # "static" | "trailing_pct"
+    trail_pct:             Mapped[Optional[float]]    = mapped_column(Float, nullable=True, default=None) # e.g. -5.0 or 10.0
+    trail_reference_price: Mapped[Optional[float]]    = mapped_column(Float, nullable=True, default=None) # peak or trough observed
 

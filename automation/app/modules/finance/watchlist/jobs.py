@@ -94,7 +94,7 @@ async def check_price_alerts_job() -> None:
     prices = await _fetch_prices_batch(symbols)
 
     triggered_ids: list[int] = []
-    messages: list[str] = []
+    notifications: list[tuple[str, int, str]] = []
 
     for alert in alerts:
         price = prices.get(alert.symbol)
@@ -115,11 +115,13 @@ async def check_price_alerts_job() -> None:
                 drawdown_pct = ((price - ref_px) / ref_px) * 100.0
                 hit = drawdown_pct <= trail_pct
                 if hit:
-                    messages.append(
+                    notifications.append((
                         f"🔔 *Trailing Price Alert Triggered!*\n"
                         f"`{alert.symbol}` dropped `{abs(drawdown_pct):.1f}%` from peak `{ref_px:,.2f}` (Limit: `{abs(trail_pct):.1f}%`)\n"
-                        f"Current price: `{price:,.2f}`"
-                    )
+                        f"Current price: `{price:,.2f}`",
+                        alert.id,
+                        alert.symbol,
+                    ))
                     triggered_ids.append(alert.id)
             else:
                 # Upside trailing: tracks trough; triggers when price rises X% above trough
@@ -129,11 +131,13 @@ async def check_price_alerts_job() -> None:
                 rally_pct = ((price - ref_px) / ref_px) * 100.0
                 hit = rally_pct >= trail_pct
                 if hit:
-                    messages.append(
+                    notifications.append((
                         f"🔔 *Trailing Price Alert Triggered!*\n"
                         f"`{alert.symbol}` rallied `+{rally_pct:.1f}%` from trough `{ref_px:,.2f}` (Limit: `+{trail_pct:.1f}%`)\n"
-                        f"Current price: `{price:,.2f}`"
-                    )
+                        f"Current price: `{price:,.2f}`",
+                        alert.id,
+                        alert.symbol,
+                    ))
                     triggered_ids.append(alert.id)
         else:
             # Standard static threshold alert
@@ -142,24 +146,39 @@ async def check_price_alerts_job() -> None:
 
             if hit:
                 direction = "📈 rose above" if alert.condition == ">" else "📉 dropped below"
-                messages.append(
+                notifications.append((
                     f"🔔 *Price Alert Triggered!*\n"
                     f"`{alert.symbol}` {direction} `{alert.threshold:,.2f}`\n"
-                    f"Current price: `{price:,.2f}`"
-                )
+                    f"Current price: `{price:,.2f}`",
+                    alert.id,
+                    alert.symbol,
+                ))
                 triggered_ids.append(alert.id)
 
-    # Mark triggered alerts in DB
+    # Mark triggered alerts in DB with timestamp
+    now = datetime.now(timezone.utc)
     if triggered_ids:
         with get_db() as db:
             for aid in triggered_ids:
                 alert_row = db.get(PriceAlert, aid)
                 if alert_row:
                     alert_row.triggered = True
+                    alert_row.triggered_at = now
 
-        # Send notifications (one message per triggered alert)
-        for msg in messages:
-            await notify(msg)
+        # Send notifications with action buttons (Chart, TA, Dismiss)
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        for msg, aid, sym in notifications:
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("📊 Chart", callback_data=f"alert:chart:{sym}"),
+                    InlineKeyboardButton("⚡ TA", callback_data=f"alert:ta:{sym}"),
+                    InlineKeyboardButton("🗑 Dismiss", callback_data=f"alert:dismiss:{aid}"),
+                ]
+            ])
+            try:
+                await notify(msg, reply_markup=keyboard)
+            except TypeError:
+                await notify(msg)
             await asyncio.sleep(0.3)  # small gap between messages
 
     if triggered_ids:
@@ -178,37 +197,32 @@ def _fetch_prices_sync(symbols: list[str]) -> dict[str, float | None]:
     from modules.finance._shared.cache import ticker_cache
 
     prices: dict[str, float | None] = {}
+    to_fetch: list[str] = []
 
-    # Use yf.download for batch efficiency
+    for sym in symbols:
+        cached = ticker_cache.get(f"price_detail:{sym}")
+        if cached and cached.get("price") is not None:
+            prices[sym] = float(cached["price"])
+        else:
+            to_fetch.append(sym)
+
+    if not to_fetch:
+        return prices
+
     try:
-        import pandas as pd  # lazy import
-        raw = yf.download(
-            tickers=symbols,
-            period="2d",
-            interval="1d",
-            progress=False,
-            auto_adjust=True,
-            group_by="ticker" if len(symbols) > 1 else "column",
-        )
-
-        if len(symbols) == 1:
-            sym = symbols[0]
+        tickers = yf.Tickers(" ".join(to_fetch))
+        for sym in to_fetch:
             try:
-                prices[sym] = float(raw["Close"].dropna().iloc[-1])
+                px = tickers.tickers[sym].fast_info.last_price
+                prices[sym] = float(px) if px is not None else None
             except Exception:
                 prices[sym] = None
-        else:
-            for sym in symbols:
-                try:
-                    prices[sym] = float(raw["Close"][sym].dropna().iloc[-1])
-                except Exception:
-                    prices[sym] = None
     except Exception as e:
-        logger.error("[watchlist] Batch price fetch failed: %s — falling back to per-ticker", e)
-        # Fallback: per-ticker fast_info
-        for sym in symbols:
+        logger.error("[watchlist] Batch fast_info fetch failed: %s — falling back", e)
+        for sym in to_fetch:
             try:
-                prices[sym] = yf.Ticker(sym).fast_info.last_price
+                px = yf.Ticker(sym).fast_info.last_price
+                prices[sym] = float(px) if px is not None else None
             except Exception:
                 prices[sym] = None
 

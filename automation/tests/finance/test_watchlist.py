@@ -189,3 +189,30 @@ class TestDailySummaryJob:
                 assert "Technical Signals (Last 24h)" in msg
                 assert "RSI Bullish Divergence" in msg
 
+
+class TestRangeBarRenderer:
+    def test_range_bar_normal(self):
+        from modules.finance.watchlist.prices import render_range_bar
+        gauge = render_range_bar(current=150.0, low=100.0, high=200.0, length=11)
+        assert "100.00" in gauge
+        assert "200.00" in gauge
+        assert "50%" in gauge
+        assert "●" in gauge
+
+    def test_range_bar_at_low(self):
+        from modules.finance.watchlist.prices import render_range_bar
+        gauge = render_range_bar(current=100.0, low=100.0, high=200.0, length=11)
+        assert "0%" in gauge
+        assert gauge.startswith("100.00 ●")
+
+    def test_range_bar_at_high(self):
+        from modules.finance.watchlist.prices import render_range_bar
+        gauge = render_range_bar(current=200.0, low=100.0, high=200.0, length=11)
+        assert "100%" in gauge
+        assert "● 200.00" in gauge
+
+    def test_range_bar_invalid_bounds(self):
+        from modules.finance.watchlist.prices import render_range_bar
+        assert render_range_bar(150.0, None, 200.0) == ""
+        assert render_range_bar(150.0, 200.0, 100.0) == ""
+

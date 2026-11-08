@@ -112,17 +112,15 @@ def _fetch_ticker_info(symbol: str) -> dict:
 # ── Command handlers ──────────────────────────────────────────────────────────
 
 async def watch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/watch <ticker> [--cat category]"""
-    args = context.args or []
+    """/watch <ticker...> [--cat category]"""
+    args = list(context.args or [])
     if not args:
         await update.message.reply_text(
-            "Usage: `/watch <ticker> [--cat category]`\n"
+            "Usage: `/watch <ticker...> [--cat category]`\n"
             f"Categories: {_VALID_CATS_MD}",
             parse_mode="Markdown",
         )
         return
-
-    symbol = args[0].upper()
 
     # Parse optional --cat override
     category_override = None
@@ -132,89 +130,191 @@ async def watch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             cat = _resolve_category(args[idx + 1])
             if cat is None:
                 await update.message.reply_text(
-                    f"❌ Unknown category `{args[idx + 1].lower()}`."
-                    f"\nValid: {_VALID_CATS_MD}",
+                    f"❌ Unknown category `{args[idx + 1].lower()}`.\nValid: {_VALID_CATS_MD}",
                     parse_mode="Markdown",
                 )
                 return
             category_override = cat
+            args = args[:idx] + args[idx + 2:]
+        else:
+            args = args[:idx]
 
-    msg = await update.message.reply_text(f"🔍 Validating `{symbol}`…", parse_mode="Markdown")
+    # Extract all candidate symbols (support comma and space separation)
+    symbols: list[str] = []
+    for a in args:
+        for s in a.replace(",", " ").split():
+            s = s.strip().upper()
+            if s and s not in symbols:
+                symbols.append(s)
 
-    loop = asyncio.get_event_loop()
-    try:
-        info = await loop.run_in_executor(None, _fetch_ticker_info, symbol)
-    except ValueError as e:
-        await msg.edit_text(f"❌ {e}")
+    if not symbols:
+        await update.message.reply_text("Usage: `/watch <ticker...> [--cat category]`", parse_mode="Markdown")
         return
-    except Exception as e:
-        logger.error("[watchlist] watch validation error: %s", e, exc_info=True)
-        await msg.edit_text(f"❌ Could not validate `{symbol}`: {e}", parse_mode="Markdown")
-        return
 
-    display_name = info["display_name"]
-    category = category_override or _detect_category(symbol)
+    # Single-ticker fast path (maintains exact existing UX)
+    if len(symbols) == 1:
+        symbol = symbols[0]
+        msg = await update.message.reply_text(f"🔍 Validating `{symbol}`…", parse_mode="Markdown")
 
-    with get_db() as db:
-        existing = db.execute(
-            select(WatchlistEntry).where(WatchlistEntry.symbol == symbol)
-        ).scalar_one_or_none()
-
-        if existing:
-            await msg.edit_text(
-                f"⚠️ `{symbol}` is already in your watchlist "
-                f"(category: `{existing.category}`).",
-                parse_mode="Markdown",
-            )
+        loop = asyncio.get_event_loop()
+        try:
+            info = await loop.run_in_executor(None, _fetch_ticker_info, symbol)
+        except ValueError as e:
+            await msg.edit_text(f"❌ {e}")
+            return
+        except Exception as e:
+            logger.error("[watchlist] watch validation error: %s", e, exc_info=True)
+            await msg.edit_text(f"❌ Could not validate `{symbol}`: {e}", parse_mode="Markdown")
             return
 
-        db.add(WatchlistEntry(
-            symbol=symbol,
-            display_name=display_name,
-            category=category,
-        ))
+        display_name = info["display_name"]
+        category = category_override or _detect_category(symbol)
 
-    cat_label = _CATEGORY_LABELS.get(category, category)
-    price = info["price"]
-    await msg.edit_text(
-        f"✅ Added *{symbol}* to watchlist\n"
-        f"📛 {display_name}\n"
-        f"🗂 {cat_label}\n"
-        f"💵 Current price: {price:,.2f}",
-        parse_mode="Markdown",
-    )
+        with get_db() as db:
+            existing = db.execute(
+                select(WatchlistEntry).where(WatchlistEntry.symbol == symbol)
+            ).scalar_one_or_none()
+
+            if existing:
+                await msg.edit_text(
+                    f"⚠️ `{symbol}` is already in your watchlist "
+                    f"(category: `{existing.category}`).",
+                    parse_mode="Markdown",
+                )
+                return
+
+            db.add(WatchlistEntry(
+                symbol=symbol,
+                display_name=display_name,
+                category=category,
+            ))
+
+        cat_label = _CATEGORY_LABELS.get(category, category)
+        price = info["price"]
+        await msg.edit_text(
+            f"✅ Added *{symbol}* to watchlist\n"
+            f"📛 {display_name}\n"
+            f"🗂 {cat_label}\n"
+            f"💵 Current price: {price:,.2f}",
+            parse_mode="Markdown",
+        )
+        return
+
+    # Multi-ticker batch path
+    msg = await update.message.reply_text(f"🔍 Validating {len(symbols)} tickers…", parse_mode="Markdown")
+    loop = asyncio.get_event_loop()
+
+    added: list[dict] = []
+    already_tracked: list[tuple[str, str]] = []
+    failed: list[tuple[str, str]] = []
+
+    with get_db() as db:
+        for sym in symbols:
+            existing = db.execute(
+                select(WatchlistEntry).where(WatchlistEntry.symbol == sym)
+            ).scalar_one_or_none()
+            if existing:
+                already_tracked.append((sym, existing.category))
+                continue
+
+            try:
+                info = await loop.run_in_executor(None, _fetch_ticker_info, sym)
+                cat = category_override or _detect_category(sym)
+                db.add(WatchlistEntry(
+                    symbol=sym,
+                    display_name=info["display_name"],
+                    category=cat,
+                ))
+                added.append({
+                    "symbol": sym,
+                    "display_name": info["display_name"],
+                    "category": cat,
+                    "price": info["price"],
+                })
+            except Exception as e:
+                failed.append((sym, str(e)))
+
+    # Format multi-ticker summary
+    out = [f"📋 *Watchlist Batch Onboarding* ({len(symbols)} submitted)\n"]
+    if added:
+        out.append(f"✅ *Added ({len(added)}):*")
+        for item in added:
+            cat_label = _CATEGORY_LABELS.get(item["category"], item["category"])
+            out.append(f"  • *{item['symbol']}* ({item['display_name']}) — `{item['price']:,.2f}` [{cat_label}]")
+        out.append("")
+    if already_tracked:
+        out.append(f"⚠️ *Already in Watchlist ({len(already_tracked)}):*")
+        for sym, cat in already_tracked:
+            cat_label = _CATEGORY_LABELS.get(cat, cat)
+            out.append(f"  • *{sym}* [{cat_label}]")
+        out.append("")
+    if failed:
+        out.append(f"❌ *Failed ({len(failed)}):*")
+        for sym, err in failed:
+            out.append(f"  • *{sym}*: {err}")
+
+    await msg.edit_text("\n".join(out).strip(), parse_mode="Markdown")
 
 
 async def unwatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/unwatch <ticker>"""
-    args = context.args or []
+    """/unwatch <ticker...>"""
+    args = list(context.args or [])
     if not args:
-        await update.message.reply_text("Usage: `/unwatch <ticker>`", parse_mode="Markdown")
+        await update.message.reply_text("Usage: `/unwatch <ticker...>`", parse_mode="Markdown")
         return
 
-    symbol = args[0].upper()
+    symbols: list[str] = []
+    for a in args:
+        for s in a.replace(",", " ").split():
+            s = s.strip().upper()
+            if s and s not in symbols:
+                symbols.append(s)
+
+    if not symbols:
+        await update.message.reply_text("Usage: `/unwatch <ticker...>`", parse_mode="Markdown")
+        return
+
+    removed: list[tuple[str, int]] = []
+    not_found: list[str] = []
 
     with get_db() as db:
-        entry = db.execute(
-            select(WatchlistEntry).where(WatchlistEntry.symbol == symbol)
-        ).scalar_one_or_none()
+        for sym in symbols:
+            entry = db.execute(
+                select(WatchlistEntry).where(WatchlistEntry.symbol == sym)
+            ).scalar_one_or_none()
+            if not entry:
+                not_found.append(sym)
+                continue
 
-        if not entry:
-            await update.message.reply_text(
-                f"⚠️ `{symbol}` is not in your watchlist.", parse_mode="Markdown"
-            )
-            return
+            alert_count = db.execute(
+                delete(PriceAlert).where(PriceAlert.symbol == sym)
+            ).rowcount
+            db.delete(entry)
+            removed.append((sym, alert_count))
 
-        # Cascade-delete associated price alerts
-        alert_count = db.execute(
-            delete(PriceAlert).where(PriceAlert.symbol == symbol)
-        ).rowcount
-        db.delete(entry)
+    if len(symbols) == 1:
+        if not_found:
+            await update.message.reply_text(f"⚠️ `{symbols[0]}` is not in your watchlist.", parse_mode="Markdown")
+        else:
+            sym, ac = removed[0]
+            suffix = f" (and {ac} alert(s))" if ac else ""
+            await update.message.reply_text(f"🗑 Removed `{sym}` from watchlist{suffix}.", parse_mode="Markdown")
+        return
 
-    suffix = f" (and {alert_count} alert(s))" if alert_count else ""
-    await update.message.reply_text(
-        f"🗑 Removed `{symbol}` from watchlist{suffix}.", parse_mode="Markdown"
-    )
+    # Multi-ticker summary
+    out = [f"🗑 *Watchlist Removal Summary*\n"]
+    if removed:
+        out.append(f"✅ *Removed ({len(removed)}):*")
+        for sym, ac in removed:
+            suffix = f" (and {ac} alert(s))" if ac else ""
+            out.append(f"  • `{sym}`{suffix}")
+        out.append("")
+    if not_found:
+        out.append(f"⚠️ *Not in Watchlist ({len(not_found)}):*")
+        for sym in not_found:
+            out.append(f"  • `{sym}`")
+
+    await update.message.reply_text("\n".join(out).strip(), parse_mode="Markdown")
 
 
 async def watchlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -291,18 +391,28 @@ async def alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 )
                 return
 
+            # Fetch current market price immediately for initial reference anchor
+            current_price = None
+            try:
+                loop = asyncio.get_event_loop()
+                info = await loop.run_in_executor(None, _fetch_ticker_info, symbol)
+                current_price = float(info["price"])
+            except Exception as e:
+                logger.debug("[watchlist] Could not fetch instant price for trailing alert %s: %s", symbol, e)
+
             db.add(PriceAlert(
                 symbol=symbol,
                 condition="<" if trail_pct < 0 else ">",
                 threshold=0.0,
                 alert_type="trailing_pct",
                 trail_pct=trail_pct,
-                trail_reference_price=None,
+                trail_reference_price=current_price,
             ))
 
         dir_desc = f"pulls back {abs(trail_pct):.1f}% from its peak" if trail_pct < 0 else f"rallies +{trail_pct:.1f}% from its trough"
+        ref_desc = f" (base price: `{current_price:,.2f}`)" if current_price is not None else ""
         await update.message.reply_text(
-            f"🔔 Trailing alert set: notify when *{symbol}* {dir_desc}.",
+            f"🔔 Trailing alert set: notify when *{symbol}* {dir_desc}{ref_desc}.",
             parse_mode="Markdown",
         )
         return
@@ -344,7 +454,9 @@ async def alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/alerts — list all active (untriggered) price alerts"""
+    """/alerts — list all active (untriggered) price alerts with one-tap delete buttons"""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
     with get_db() as db:
         rows = db.execute(
             select(PriceAlert)
@@ -360,6 +472,7 @@ async def alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     lines = ["🔔 *Active Price Alerts*\n"]
+    buttons: list[list[InlineKeyboardButton]] = []
     for a in rows:
         if getattr(a, "alert_type", "static") == "trailing_pct" and a.trail_pct is not None:
             pct_desc = f"{a.trail_pct:+.1f}% trail"
@@ -368,9 +481,11 @@ async def alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         else:
             direction = "↑ above" if a.condition == ">" else "↓ below"
             lines.append(f"`#{a.id}` *{a.symbol}* {direction} `{a.threshold:,.2f}`")
+        buttons.append([InlineKeyboardButton(f"🗑 Delete #{a.id} ({a.symbol})", callback_data=f"alert:del:{a.id}")])
 
-    lines.append("\nDelete with `/delalert <id>`")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    lines.append("\nTap a button below to delete, or use `/delalert <id>`")
+    reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=reply_markup)
 
 
 async def delalert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -396,6 +511,114 @@ async def delalert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_text(
         f"🗑 Deleted alert `#{alert_id}` for `{symbol}`.", parse_mode="Markdown"
     )
+
+
+async def alert_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle interactive callbacks for price alerts: del, dismiss, chart, ta."""
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    data = query.data or ""
+    parts = data.split(":")
+    if len(parts) < 3 or parts[0] != "alert":
+        return
+
+    action, target = parts[1], parts[2]
+
+    if action == "del":
+        try:
+            aid = int(target)
+            with get_db() as db:
+                alert = db.get(PriceAlert, aid)
+                if alert:
+                    sym = alert.symbol
+                    db.delete(alert)
+                    db.commit()
+                    await query.answer(f"Deleted alert #{aid} for {sym}")
+                else:
+                    await query.answer("Alert already deleted", show_alert=True)
+
+                # Query remaining active alerts
+                remaining_rows = db.execute(
+                    select(PriceAlert)
+                    .where(PriceAlert.triggered == False)  # noqa: E712
+                    .order_by(PriceAlert.symbol, PriceAlert.created_at)
+                ).scalars().all()
+
+            if not remaining_rows:
+                await query.edit_message_text(f"🗑 Deleted alert `#{aid}`.\n\nNo active price alerts remaining.", parse_mode="Markdown")
+            else:
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                lines = [f"🗑 Deleted alert `#{aid}`.\n", "🔔 *Active Price Alerts*\n"]
+                buttons = []
+                for a in remaining_rows:
+                    if getattr(a, "alert_type", "static") == "trailing_pct" and a.trail_pct is not None:
+                        pct_desc = f"{a.trail_pct:+.1f}% trail"
+                        ref_str = f" (ref: `{a.trail_reference_price:,.2f}`)" if a.trail_reference_price else ""
+                        lines.append(f"`#{a.id}` *{a.symbol}* {pct_desc}{ref_str}")
+                    else:
+                        direction = "↑ above" if a.condition == ">" else "↓ below"
+                        lines.append(f"`#{a.id}` *{a.symbol}* {direction} `{a.threshold:,.2f}`")
+                    buttons.append([InlineKeyboardButton(f"🗑 Delete #{a.id} ({a.symbol})", callback_data=f"alert:del:{a.id}")])
+
+                lines.append("\nTap a button below to delete, or use `/delalert <id>`")
+                reply_markup = InlineKeyboardMarkup(buttons)
+                await query.edit_message_text("\n".join(lines), parse_mode="Markdown", reply_markup=reply_markup)
+        except Exception as e:
+            logger.error("[watchlist] Callback alert:del failed: %s", e)
+
+    elif action == "dismiss":
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+    elif action == "chart":
+        symbol = target.upper()
+        try:
+            from modules.finance.technical.charts import fetch_and_render
+            import os
+            png_path, result = await fetch_and_render(symbol, "1d")
+            with open(png_path, "rb") as f:
+                await context.bot.send_photo(
+                    chat_id=query.message.chat_id,
+                    photo=f,
+                    caption=f"📊 *{symbol}* — 1D  |  💵 `{result.current_price:,.2f}`",
+                    parse_mode="Markdown",
+                )
+            try:
+                os.unlink(png_path)
+            except OSError:
+                pass
+        except Exception as e:
+            logger.error("[watchlist] Callback alert:chart failed for %s: %s", symbol, e)
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=f"❌ Chart generation failed for `{symbol}`: {e}",
+                parse_mode="Markdown",
+            )
+
+    elif action == "ta":
+        symbol = target.upper()
+        try:
+            from modules.finance.technical.charts import fetch_ta_only
+            from modules.finance.technical.indicators import format_ta_summary
+            result = await fetch_ta_only(symbol)
+            summary = format_ta_summary(result)
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=summary,
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            logger.error("[watchlist] Callback alert:ta failed for %s: %s", symbol, e)
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=f"❌ TA computation failed for `{symbol}`: {e}",
+                parse_mode="Markdown",
+            )
 
 async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/price <ticker> — quick price card with 24h change, day/52W ranges"""

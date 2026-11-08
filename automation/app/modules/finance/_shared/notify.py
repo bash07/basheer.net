@@ -15,7 +15,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-async def notify(text: str, parse_mode: str = "Markdown") -> None:
+async def notify(text: str, parse_mode: str = "Markdown", reply_markup=None) -> None:
     """Send a text message to the configured Telegram chat."""
     from core.bot import bot_app
     from config import config
@@ -24,6 +24,7 @@ async def notify(text: str, parse_mode: str = "Markdown") -> None:
             chat_id=config.telegram_chat_id,
             text=text,
             parse_mode=parse_mode,
+            reply_markup=reply_markup,
         )
     except Exception as e:
         logger.error("[finance.notify] Failed to send message: %s", e, exc_info=True)

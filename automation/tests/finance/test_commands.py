@@ -148,6 +148,48 @@ class TestWatchCommandWithMockedYFinance:
         update.message.reply_text.assert_called_once()
         assert "Unknown category" in update.message.reply_text.call_args[0][0]
 
+    async def test_watch_bulk_success(self, make_update, clean_db):
+        update, context = make_update(args=["NVDA", "AAPL"])
+        mock_info = {
+            "NVDA": {"display_name": "NVIDIA", "price": 125.0},
+            "AAPL": {"display_name": "Apple", "price": 220.0},
+        }
+        with patch(
+            "modules.finance.watchlist.commands._fetch_ticker_info",
+            side_effect=lambda sym: mock_info[sym],
+        ):
+            from modules.finance.watchlist.commands import watch_command
+            await watch_command(update, context)
+
+        sent_msg = update.message.reply_text.return_value
+        sent_msg.edit_text.assert_called_once()
+        text = sent_msg.edit_text.call_args[0][0]
+        assert "Batch Onboarding" in text
+        assert "NVDA" in text
+        assert "AAPL" in text
+
+    async def test_watch_bulk_partial_failure(self, make_update, clean_db):
+        update, context = make_update(args=["NVDA", "INVALID"])
+        def _mock_fetch(sym):
+            if sym == "NVDA":
+                return {"display_name": "NVIDIA", "price": 125.0}
+            raise ValueError("Ticker 'INVALID' not found")
+
+        with patch(
+            "modules.finance.watchlist.commands._fetch_ticker_info",
+            side_effect=_mock_fetch,
+        ):
+            from modules.finance.watchlist.commands import watch_command
+            await watch_command(update, context)
+
+        sent_msg = update.message.reply_text.return_value
+        sent_msg.edit_text.assert_called_once()
+        text = sent_msg.edit_text.call_args[0][0]
+        assert "Added" in text
+        assert "NVDA" in text
+        assert "Failed" in text
+        assert "INVALID" in text
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Pattern 3 — DB + command integration
@@ -205,6 +247,25 @@ class TestUnwatchCommand:
         # Reply should mention the alert count
         text = update.message.reply_text.call_args[0][0]
         assert "2 alert" in text
+
+    async def test_unwatch_bulk(self, make_update, clean_db):
+        from modules.finance.watchlist.models import WatchlistEntry
+        clean_db.add_all([
+            WatchlistEntry(symbol="TSLA", display_name="Tesla", category="us_stock"),
+            WatchlistEntry(symbol="AMD",  display_name="AMD",   category="us_stock"),
+        ])
+        clean_db.commit()
+
+        update, context = make_update(args=["TSLA", "AMD", "NOTTHERE"])
+        from modules.finance.watchlist.commands import unwatch_command
+        await unwatch_command(update, context)
+
+        text = update.message.reply_text.call_args[0][0]
+        assert "Removed" in text
+        assert "TSLA" in text
+        assert "AMD" in text
+        assert "Not in Watchlist" in text
+        assert "NOTTHERE" in text
 
 
 class TestWatchlistCommand:
@@ -282,6 +343,95 @@ class TestAlertCommand:
 
         text = update.message.reply_text.call_args[0][0]
         assert "❌" in text
+
+    async def test_alert_trailing_immediate_anchor(self, make_update, clean_db):
+        from sqlalchemy import select
+        from modules.finance.watchlist.models import WatchlistEntry, PriceAlert
+        clean_db.add(WatchlistEntry(symbol="AAPL", display_name="Apple", category="us_stock"))
+        clean_db.commit()
+
+        update, context = make_update(args=["AAPL", "trail", "-5%"])
+        with patch(
+            "modules.finance.watchlist.commands._fetch_ticker_info",
+            return_value={"display_name": "Apple", "price": 224.50},
+        ):
+            from modules.finance.watchlist.commands import alert_command
+            await alert_command(update, context)
+
+        text = update.message.reply_text.call_args[0][0]
+        assert "Trailing alert set" in text
+        assert "224.50" in text
+
+        alert = clean_db.execute(select(PriceAlert).where(PriceAlert.symbol == "AAPL")).scalar_one()
+        assert alert.alert_type == "trailing_pct"
+        assert alert.trail_pct == -5.0
+        assert alert.trail_reference_price == 224.50
+
+
+class TestAlertsCommand:
+    async def test_alerts_command_renders_buttons(self, make_update, clean_db):
+        from modules.finance.watchlist.models import WatchlistEntry, PriceAlert
+        clean_db.add(WatchlistEntry(symbol="AAPL", display_name="Apple", category="us_stock"))
+        clean_db.commit()
+        clean_db.add(PriceAlert(symbol="AAPL", condition=">", threshold=250.0))
+        clean_db.commit()
+
+        update, context = make_update(args=[])
+        from modules.finance.watchlist.commands import alerts_command
+        await alerts_command(update, context)
+
+        update.message.reply_text.assert_called_once()
+        text = update.message.reply_text.call_args[0][0]
+        assert "AAPL" in text
+        kwargs = update.message.reply_text.call_args[1]
+        reply_markup = kwargs.get("reply_markup")
+        assert reply_markup is not None
+        assert len(reply_markup.inline_keyboard) == 1
+        assert "alert:del:" in reply_markup.inline_keyboard[0][0].callback_data
+
+
+class TestAlertCallback:
+    async def test_callback_delete_alert(self, clean_db):
+        from unittest.mock import MagicMock
+        from sqlalchemy import select
+        from modules.finance.watchlist.models import WatchlistEntry, PriceAlert
+        from modules.finance.watchlist.commands import alert_callback
+
+        clean_db.add(WatchlistEntry(symbol="NVDA", display_name="NVIDIA", category="us_stock"))
+        clean_db.commit()
+        alert = PriceAlert(symbol="NVDA", condition=">", threshold=150.0)
+        clean_db.add(alert)
+        clean_db.commit()
+        alert_id = alert.id
+
+        update = MagicMock()
+        query = MagicMock()
+        query.data = f"alert:del:{alert_id}"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        await alert_callback(update, context)
+
+        query.answer.assert_called()
+        remaining = clean_db.execute(select(PriceAlert).where(PriceAlert.id == alert_id)).scalar_one_or_none()
+        assert remaining is None
+
+    async def test_callback_dismiss_alert(self):
+        from unittest.mock import MagicMock
+        from modules.finance.watchlist.commands import alert_callback
+
+        update = MagicMock()
+        query = MagicMock()
+        query.data = "alert:dismiss:1"
+        query.answer = AsyncMock()
+        query.edit_message_reply_markup = AsyncMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        await alert_callback(update, context)
+        query.edit_message_reply_markup.assert_called_once_with(reply_markup=None)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

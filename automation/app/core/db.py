@@ -81,6 +81,8 @@ def init_db() -> None:
                 conn.execute(text("ALTER TABLE price_alerts ADD COLUMN trail_pct FLOAT"))
             if "trail_reference_price" not in columns:
                 conn.execute(text("ALTER TABLE price_alerts ADD COLUMN trail_reference_price FLOAT"))
+            if "triggered_at" not in columns:
+                conn.execute(text("ALTER TABLE price_alerts ADD COLUMN triggered_at DATETIME"))
             conn.commit()
 
     # Auto-migration: Migrate paper_account.json to account_balances table if present
