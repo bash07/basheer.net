@@ -1,9 +1,0 @@
-{
-  "setups": {
-    "OB Retracement": true,
-    "Liquidity Sweep + FVG": true,
-    "Displacement + FVG": false,
-    "EMA Pullback + Hidden Div": true,
-    "Range Liquidity Sweep": true
-  }
-}

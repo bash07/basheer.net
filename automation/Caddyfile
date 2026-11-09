@@ -1,3 +1,0 @@
-ai.basheer.net {
-    reverse_proxy automation-server:8000
-}

@@ -13,14 +13,5 @@ Thumbs.db
 *.swp
 *.swo
 
-# Python
-__pycache__/
-*.pyc
-.env
-venv/
-
 # Node (if ever needed)
 node_modules/
-
-.backtest_cache/
-automation/BASHEER_ENV.md
