@@ -1,0 +1,11 @@
+<div id="logs-container" class="bg-zinc-950 border border-zinc-800 rounded-xl p-4 font-mono text-xs text-zinc-300 h-80 overflow-y-auto space-y-1">
+{% if logs and logs|length > 0 %}
+  {% for line in logs %}
+    <div class="leading-relaxed hover:bg-zinc-900/50 px-1 rounded transition {% if '[ERROR]' in line %}text-rose-400 font-semibold{% elif '[WARNING]' in line %}text-amber-400{% elif '[INFO]' in line and ('success' in line.lower() or 'complete' in line.lower()) %}text-emerald-400{% else %}text-zinc-400{% endif %}">
+      {{ line }}
+    </div>
+  {% endfor %}
+{% else %}
+  <div class="text-zinc-600 text-center py-8">Log file is currently empty or no log records found.</div>
+{% endif %}
+</div>

@@ -1,0 +1,68 @@
+{% if signals and signals|length > 0 %}
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    {% for s in signals %}
+    <div id="setup-card-{{ s.id }}" class="border border-zinc-800 bg-zinc-900/60 rounded-xl p-4 space-y-3 transition hover:border-zinc-700">
+      <div class="flex items-start justify-between">
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="text-base font-bold font-mono text-white">{{ s.ticker }}</span>
+            <span class="px-2 py-0.5 rounded text-[11px] font-semibold {% if s.direction.lower() == 'long' %}bg-emerald-950 text-emerald-400 border border-emerald-800{% else %}bg-rose-950 text-rose-400 border border-rose-800{% endif %}">
+              {{ s.direction|upper }}
+            </span>
+            <span class="text-xs text-zinc-400 font-mono">{{ s.mode|upper }}</span>
+          </div>
+          <div class="text-xs text-zinc-400 mt-1">Setup: {{ s.setup_name }} | {{ s.bias }}</div>
+        </div>
+        <div class="text-right font-mono">
+          <div class="text-[10px] text-zinc-500 uppercase">Score (0–10)</div>
+          <div class="text-sm font-bold text-emerald-400">
+            {{ "%.1f"|format(s.conf_score) }} / 10.0
+            <span class="text-xs text-zinc-400 font-normal">({{ "%.1f"|format(s.rr_ratio) }}R)</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Price Level Grid (Entry, SL, TP1, TP2 estimate) -->
+      <div class="grid grid-cols-3 gap-2 p-2.5 rounded-lg bg-zinc-950/70 border border-zinc-800/80 font-mono text-xs">
+        <div>
+          <span class="text-zinc-500 block text-[10px]">ENTRY</span>
+          <span class="text-zinc-200 font-semibold">${{ "%.2f"|format(s.entry_mid) }}</span>
+        </div>
+        <div>
+          <span class="text-rose-400 block text-[10px]">STOP LOSS</span>
+          <span class="text-zinc-200 font-semibold">${{ "%.2f"|format(s.stop_loss) }}</span>
+        </div>
+        <div>
+          <span class="text-emerald-400 block text-[10px]">TAKE PROFIT 1</span>
+          <span class="text-zinc-200 font-semibold">${{ "%.2f"|format(s.tp1) }}</span>
+        </div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="flex items-center gap-2 pt-1">
+        <button 
+          hx-post="/api/trader/approve/{{ s.id }}"
+          hx-target="#positions-tbody"
+          hx-swap="outerHTML"
+          hx-on::after-request="document.getElementById('setup-card-{{ s.id }}').remove()"
+          class="flex-1 py-1.5 px-3 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg transition shadow-sm"
+        >
+          ✓ Approve (Enter Paper Order)
+        </button>
+        <button 
+          hx-post="/api/trader/dismiss/{{ s.id }}"
+          hx-target="#setup-card-{{ s.id }}"
+          hx-swap="outerHTML"
+          class="py-1.5 px-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium rounded-lg transition border border-zinc-700"
+        >
+          Dismiss
+        </button>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+{% else %}
+  <div class="p-8 text-center text-xs text-zinc-500 font-mono border border-dashed border-zinc-800 rounded-xl">
+    No pending Trade setups detected in the last 48 hours. Click "Run 3-Tier SMC Scan" above to scan all watchlist tickers.
+  </div>
+{% endif %}

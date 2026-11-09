@@ -105,6 +105,10 @@ async def lifespan(app: FastAPI):
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
+import os
+from fastapi import Request
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from core.version import __version__, get_version_info
 
 app = FastAPI(
@@ -114,11 +118,53 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# ── Security Middleware ───────────────────────────────────────────────────────
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+# ── Static Files Mount ────────────────────────────────────────────────────────
+
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+# ── UI Routers ────────────────────────────────────────────────────────────────
+
+from routers.auth import router as auth_router
+from routers.trader_ui import router as trader_router
+from routers.watchlist_ui import router as watchlist_router
+from routers.screener_ui import router as screener_router
+from routers.fundamental_ui import router as fundamental_router
+from routers.blog_ui import router as blog_router
+from routers.monitor_ui import router as monitor_router
+from routers.ops_ui import router as ops_router
+from routers.chat_ui import router as chat_router
+
+app.include_router(auth_router)
+app.include_router(trader_router)
+app.include_router(watchlist_router)
+app.include_router(screener_router)
+app.include_router(fundamental_router)
+app.include_router(blog_router)
+app.include_router(monitor_router)
+app.include_router(ops_router)
+app.include_router(chat_router)
+
 
 # ── REST endpoints ────────────────────────────────────────────────────────────
 
 @app.get("/")
-def root():
+def root(request: Request):
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept:
+        return RedirectResponse(url="/trader", status_code=303)
+
     from core.registry import get_loaded
     v_info = get_version_info()
     return {

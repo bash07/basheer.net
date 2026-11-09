@@ -1,0 +1,59 @@
+<tbody id="prices-tbody" class="divide-y divide-zinc-800/60 font-mono text-xs">
+{% if entries and entries|length > 0 %}
+  {% for e in entries %}
+    {% set q = quotes.get(e.symbol) %}
+    <tr class="hover:bg-zinc-900/40">
+      <td class="py-3 px-4 font-bold text-white">{{ e.symbol }}</td>
+      <td class="py-3 px-4">
+        <span class="px-2 py-0.5 rounded text-[10px] bg-zinc-900 text-zinc-300 border border-zinc-800 font-sans">
+          {{ e.category }}
+        </span>
+      </td>
+      <td class="py-3 px-4 text-zinc-100 font-semibold">
+        {% if q and q.price is not none %}
+          ${{ "%.2f"|format(q.price) if q.price >= 1 else "%.4f"|format(q.price) }}
+        {% else %}
+          <span class="text-zinc-500">—</span>
+        {% endif %}
+      </td>
+      <td class="py-3 px-4">
+        {% if q and q.change_pct is not none %}
+          <span class="{% if q.change_pct >= 0 %}text-emerald-400{% else %}text-rose-400{% endif %} font-semibold">
+            {{ "%+.2f"|format(q.change_pct) }}% {% if q.change_pct >= 0 %}🟢{% else %}🔴{% endif %}
+          </span>
+        {% else %}
+          <span class="text-zinc-500">—</span>
+        {% endif %}
+      </td>
+      <td class="py-3 px-4 text-zinc-400">
+        {% if q and q.day_low is not none and q.day_high is not none %}
+          {{ "%.2f"|format(q.day_low) }} – {{ "%.2f"|format(q.day_high) }}
+        {% else %}
+          <span class="text-zinc-500">—</span>
+        {% endif %}
+      </td>
+      <td class="py-3 px-4 text-zinc-400">
+        {% if q and q.week52_low is not none and q.week52_high is not none %}
+          {{ "%.2f"|format(q.week52_low) }} – {{ "%.2f"|format(q.week52_high) }}
+        {% else %}
+          <span class="text-zinc-500">—</span>
+        {% endif %}
+      </td>
+      <td class="py-3 px-4 text-right">
+        <form action="/api/watchlist/delete/{{ e.symbol }}" method="POST" class="inline" onsubmit="return confirm('Remove {{ e.symbol }} and associated alerts?');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="px-2 py-1 bg-zinc-900 hover:bg-rose-950 hover:text-rose-400 text-zinc-400 rounded text-[11px] border border-zinc-800 transition">
+            Delete
+          </button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+{% else %}
+  <tr>
+    <td colspan="7" class="py-8 text-center text-zinc-500 text-xs">
+      No tickers found in this category. Click "+ Add Ticker" to track new symbols.
+    </td>
+  </tr>
+{% endif %}
+</tbody>

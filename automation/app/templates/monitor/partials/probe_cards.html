@@ -1,0 +1,54 @@
+<div id="probe-cards-container" class="grid grid-cols-1 md:grid-cols-2 gap-4 font-mono text-xs">
+{% if probes and probes|length > 0 %}
+  {% for p in probes %}
+    {% set ep = p.endpoint %}
+    {% set chk = p.latest %}
+    <div class="p-4 rounded-xl bg-zinc-950 border border-zinc-800 space-y-3">
+      <div class="flex items-center justify-between">
+        <span class="font-bold text-white text-sm font-sans">{{ ep.name }}</span>
+        {% if chk and chk.is_up %}
+          <span class="px-2 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 font-bold border border-emerald-800">
+            {{ chk.status_code }} OK
+          </span>
+        {% else %}
+          <span class="px-2 py-0.5 rounded text-[10px] bg-rose-950 text-rose-400 font-bold border border-rose-800">
+            {{ chk.status_code if chk and chk.status_code else "DOWN" }}
+          </span>
+        {% endif %}
+      </div>
+      
+      <div class="text-[11px] text-zinc-400 break-all">{{ ep.url }}</div>
+
+      <div class="grid grid-cols-3 gap-2 pt-2 border-t border-zinc-800/80">
+        <div>
+          <span class="text-zinc-500 block text-[10px]">RESPONSE</span>
+          <span class="text-emerald-400 font-bold">
+            {% if chk and chk.response_time_ms is not none %}{{ chk.response_time_ms }} ms{% else %}—{% endif %}
+          </span>
+        </div>
+        <div>
+          <span class="text-zinc-500 block text-[10px]">LAST CHECK</span>
+          <span class="text-zinc-300">
+            {% if chk and chk.checked_at %}{{ chk.checked_at.strftime('%H:%M:%S') }}{% else %}—{% endif %}
+          </span>
+        </div>
+        <div>
+          <span class="text-zinc-500 block text-[10px]">SSL EXPIRY</span>
+          <!-- Real SSL days remaining from CheckResult model -->
+          {% if chk and chk.ssl_days_remaining is not none %}
+            <span class="{% if chk.ssl_days_remaining > 14 %}text-emerald-400{% else %}text-amber-400{% endif %} font-bold">
+              {{ chk.ssl_days_remaining }} days left
+            </span>
+          {% else %}
+            <span class="text-zinc-500">N/A</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  {% endfor %}
+{% else %}
+  <div class="col-span-2 p-8 text-center text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
+    No monitored endpoints registered in the database.
+  </div>
+{% endif %}
+</div>

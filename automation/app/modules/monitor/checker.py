@@ -3,8 +3,11 @@ HTTP endpoint checker — performs a single GET request and records the result.
 Sends Telegram alerts on state changes (up→down, down→up) and slow responses.
 """
 import logging
+import socket
+import ssl
 import time
-from datetime import datetime
+from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import httpx
 
@@ -14,6 +17,31 @@ from .models import CheckResult, Endpoint
 
 logger = logging.getLogger(__name__)
 TIMEOUT = 10  # seconds
+
+
+def get_ssl_days_remaining(url: str, timeout: float = 5.0) -> int | None:
+    """Return number of days remaining on SSL certificate, or None if not HTTPS/error."""
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme.lower() != "https":
+            return None
+        hostname = parsed.hostname
+        if not hostname:
+            return None
+        port = parsed.port or 443
+
+        context = ssl.create_default_context()
+        with socket.create_connection((hostname, port), timeout=timeout) as sock:
+            with context.wrap_socket(sock, server_hostname=hostname) as ssock:
+                cert = ssock.getpeercert()
+                if not cert or "notAfter" not in cert:
+                    return None
+                expire_date = datetime.strptime(cert["notAfter"], "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+                diff = expire_date - datetime.now(timezone.utc)
+                return max(0, diff.days)
+    except Exception as e:
+        logger.debug("SSL check failed for %s: %s", url, e)
+        return None
 
 
 async def _send_telegram(message: str) -> None:
@@ -44,9 +72,11 @@ async def check_endpoint(endpoint: Endpoint) -> CheckResult:
         result.is_up = r.status_code < 500
         result.status_code = r.status_code
         result.response_time_ms = elapsed_ms
+        result.ssl_days_remaining = get_ssl_days_remaining(endpoint.url)
     except Exception as e:
         result.is_up = False
         result.error = str(e)[:300]
+        result.ssl_days_remaining = get_ssl_days_remaining(endpoint.url)
 
     return result
 

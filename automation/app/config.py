@@ -44,8 +44,10 @@ class Config:
     telegram_bot_token: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id: int = int(os.environ.get("TELEGRAM_CHAT_ID", "0"))
 
-    # REST API
+    # REST API & Web Dashboard
     webhook_secret: str = os.environ.get("WEBHOOK_SECRET", "")
+    dashboard_secret_key: str = os.environ.get("DASHBOARD_SECRET_KEY", "basheer-net-dashboard-secret-salt-2026")
+    dashboard_passphrase: str = os.environ.get("DASHBOARD_PASSPHRASE", os.environ.get("WEBHOOK_SECRET", "basheer2026!"))
 
     # Misc
     timezone: str = os.environ.get("GENERIC_TIMEZONE", "Asia/Kolkata")

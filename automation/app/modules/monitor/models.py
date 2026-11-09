@@ -27,4 +27,5 @@ class CheckResult(Base):
     is_up: Mapped[bool] = mapped_column(Boolean)
     status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     response_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ssl_days_remaining: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ title or "ai.basheer.net — Terminal Login" }}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/static/js/alpine.min.js" defer></script>
+  <style>
+    .pulse-dot { animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .spinner { border: 2px solid rgba(255,255,255,0.1); border-left-color: #10b981; border-radius: 50%; width: 16px; height: 16px; animation: spin 0.8s linear infinite; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+  </style>
+</head>
+<body class="bg-[#09090b] text-zinc-100 min-h-screen flex items-center justify-center p-4 font-mono select-none">
+
+  <div 
+    x-data="{
+      step: 1,
+      passphrase: '',
+      otpCode: '',
+      loading: false,
+      errorMsg: '',
+      successMsg: '',
+      async requestOtp() {
+        if (!this.passphrase) {
+          this.errorMsg = 'Please enter your master passphrase.';
+          return;
+        }
+        this.loading = true;
+        this.errorMsg = '';
+        this.successMsg = '';
+        try {
+          const res = await fetch('/api/auth/request-otp', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ passphrase: this.passphrase })
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            this.errorMsg = data.detail || 'Failed to dispatch OTP.';
+          } else {
+            this.step = 2;
+            this.successMsg = data.message || '6-Digit verification code dispatched to Telegram.';
+          }
+        } catch (err) {
+          this.errorMsg = 'Network error. Please try again.';
+        } finally {
+          this.loading = false;
+        }
+      },
+      async verifyOtp() {
+        if (!this.otpCode || this.otpCode.length !== 6) {
+          this.errorMsg = 'Please enter the 6-digit code sent to Telegram.';
+          return;
+        }
+        this.loading = true;
+        this.errorMsg = '';
+        try {
+          const res = await fetch('/api/auth/verify-otp', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: this.otpCode })
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            this.errorMsg = data.detail || 'Invalid or expired OTP.';
+          } else {
+            window.location.href = data.redirect || '/';
+          }
+        } catch (err) {
+          this.errorMsg = 'Network error during verification.';
+        } finally {
+          this.loading = false;
+        }
+      }
+    }"
+    class="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-2xl p-6 sm:p-8 space-y-6 shadow-2xl relative"
+  >
+    <!-- Brand / Title -->
+    <div class="text-center space-y-1.5">
+      <div class="flex items-center justify-center gap-2">
+        <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 pulse-dot"></span>
+        <span class="text-xl font-bold tracking-tight text-white font-sans">ai.basheer.net</span>
+      </div>
+      <div class="text-xs text-zinc-400">Zero-Trust Cockpit Terminal</div>
+    </div>
+
+    <!-- Security Badges -->
+    <div class="flex items-center justify-between p-2.5 rounded-lg bg-zinc-950/80 border border-zinc-800 text-[11px] text-zinc-400">
+      <span class="flex items-center gap-1.5">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> Hardware 2FA
+      </span>
+      <span>Rate Limit: 5/15m</span>
+      <span class="text-emerald-400 font-semibold">CSRF Protected</span>
+    </div>
+
+    <!-- Error Alert -->
+    <div x-show="errorMsg" x-cloak class="p-3 rounded-xl bg-rose-950/70 border border-rose-800/80 text-rose-300 text-xs flex items-start gap-2">
+      <span>⚠️</span>
+      <span x-text="errorMsg"></span>
+    </div>
+
+    <!-- Success / OTP Sent Alert -->
+    <div x-show="successMsg" x-cloak class="p-3 rounded-xl bg-emerald-950/70 border border-emerald-800/80 text-emerald-300 text-xs flex items-start gap-2">
+      <span>📲</span>
+      <span x-text="successMsg"></span>
+    </div>
+
+    <!-- STEP 1: PASSPHRASE ENTRY -->
+    <form x-show="step === 1" @submit.prevent="requestOtp" class="space-y-4">
+      <div>
+        <label class="block text-xs font-medium text-zinc-300 mb-1.5">Master Passphrase</label>
+        <input 
+          type="password" 
+          x-model="passphrase" 
+          placeholder="••••••••••••••••" 
+          required
+          autofocus
+          class="w-full bg-zinc-950 border border-zinc-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 rounded-lg px-3.5 py-2.5 text-sm text-white placeholder-zinc-600 outline-none transition"
+        >
+      </div>
+
+      <button 
+        type="submit" 
+        :disabled="loading"
+        class="w-full py-2.5 px-4 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 font-semibold text-xs rounded-lg border border-zinc-700 transition flex items-center justify-center gap-2 shadow-sm disabled:opacity-50"
+      >
+        <template x-if="loading"><div class="spinner"></div></template>
+        <template x-if="!loading"><span>📲 Request Telegram 2FA Code</span></template>
+      </button>
+    </form>
+
+    <!-- STEP 2: TELEGRAM OTP ENTRY -->
+    <form x-show="step === 2" x-cloak @submit.prevent="verifyOtp" class="space-y-4">
+      <div>
+        <div class="flex items-center justify-between mb-1.5">
+          <label class="block text-xs font-medium text-zinc-300">Enter 6-Digit Telegram Code</label>
+          <button type="button" @click="step = 1; errorMsg = '';" class="text-[11px] text-zinc-500 hover:text-zinc-300 underline">Change Passphrase</button>
+        </div>
+        <input 
+          type="text" 
+          x-model="otpCode" 
+          maxlength="6" 
+          placeholder="842109" 
+          required 
+          autofocus
+          class="w-full bg-zinc-950 border border-zinc-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 rounded-lg px-3.5 py-3 text-center text-xl tracking-[0.4em] font-bold text-emerald-400 outline-none transition"
+        >
+      </div>
+
+      <button 
+        type="submit" 
+        :disabled="loading"
+        class="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg transition flex items-center justify-center gap-2 shadow-sm disabled:opacity-50"
+      >
+        <template x-if="loading"><div class="spinner"></div></template>
+        <template x-if="!loading"><span>🔓 Unlock Cockpit Terminal</span></template>
+      </button>
+
+      <div class="text-center pt-1">
+        <button type="button" @click="requestOtp" class="text-[11px] text-zinc-500 hover:text-zinc-300 transition">
+          Didn't receive code? Resend
+        </button>
+      </div>
+    </form>
+
+    <!-- Footer Note -->
+    <div class="text-center text-[11px] text-zinc-600 pt-2 border-t border-zinc-800/80">
+      Authorized personal terminal only. IP and requests are audited.
+    </div>
+  </div>
+
+</body>
+</html>

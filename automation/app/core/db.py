@@ -66,10 +66,30 @@ def init_db() -> None:
     if "positions" in inspector.get_table_names():
         columns = [c["name"] for c in inspector.get_columns("positions")]
         with engine.connect() as conn:
+            if "initial_stop_loss" not in columns:
+                conn.execute(text("ALTER TABLE positions ADD COLUMN initial_stop_loss FLOAT"))
             if "tp1_hit" not in columns:
                 conn.execute(text("ALTER TABLE positions ADD COLUMN tp1_hit BOOLEAN DEFAULT 0"))
             if "tp2" not in columns:
                 conn.execute(text("ALTER TABLE positions ADD COLUMN tp2 FLOAT"))
+            if "trailing_stop_active" not in columns:
+                conn.execute(text("ALTER TABLE positions ADD COLUMN trailing_stop_active BOOLEAN DEFAULT 0"))
+            if "peak_price" not in columns:
+                conn.execute(text("ALTER TABLE positions ADD COLUMN peak_price FLOAT"))
+            if "broker" not in columns:
+                conn.execute(text("ALTER TABLE positions ADD COLUMN broker VARCHAR(30) DEFAULT 'paper'"))
+            if "broker_order_id" not in columns:
+                conn.execute(text("ALTER TABLE positions ADD COLUMN broker_order_id VARCHAR(100)"))
+            if "close_price" not in columns:
+                conn.execute(text("ALTER TABLE positions ADD COLUMN close_price FLOAT"))
+            if "realised_pnl" not in columns:
+                conn.execute(text("ALTER TABLE positions ADD COLUMN realised_pnl FLOAT"))
+            if "realised_rr" not in columns:
+                conn.execute(text("ALTER TABLE positions ADD COLUMN realised_rr FLOAT"))
+            if "outcome" not in columns:
+                conn.execute(text("ALTER TABLE positions ADD COLUMN outcome VARCHAR(15)"))
+            if "notes" not in columns:
+                conn.execute(text("ALTER TABLE positions ADD COLUMN notes TEXT"))
             conn.commit()
 
     if "price_alerts" in inspector.get_table_names():
@@ -98,6 +118,13 @@ def init_db() -> None:
                 conn.execute(text("ALTER TABLE watchlist_entries ADD COLUMN strategy_types VARCHAR(250)"))
             if "expires_at" not in columns:
                 conn.execute(text("ALTER TABLE watchlist_entries ADD COLUMN expires_at DATETIME"))
+            conn.commit()
+
+    if "check_results" in inspector.get_table_names():
+        columns = [c["name"] for c in inspector.get_columns("check_results")]
+        with engine.connect() as conn:
+            if "ssl_days_remaining" not in columns:
+                conn.execute(text("ALTER TABLE check_results ADD COLUMN ssl_days_remaining INTEGER"))
             conn.commit()
 
     # Auto-migration: Migrate paper_account.json to account_balances table if present
