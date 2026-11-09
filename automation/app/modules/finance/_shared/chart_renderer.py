@@ -104,6 +104,26 @@ if vp and "poc" in vp and "vah" in vp and "val" in vp:
         mpf.make_addplot(pd.Series(val_val, index=df.index), color="#ba68c8", linestyle="--", width=1.0)
     )
 
+# ── Wyckoff Overlays ──────────────────────────────────────────────────────────
+wy = params.get("wyckoff", {})
+if wy:
+    if wy.get("range_high"):
+        addplots.append(
+            mpf.make_addplot(pd.Series(float(wy["range_high"]), index=df.index), color="#f59e0b", linestyle="--", width=1.2)
+        )
+    if wy.get("range_low"):
+        addplots.append(
+            mpf.make_addplot(pd.Series(float(wy["range_low"]), index=df.index), color="#f59e0b", linestyle="--", width=1.2)
+        )
+    if wy.get("t_cons") and float(wy["t_cons"]) > 0:
+        addplots.append(
+            mpf.make_addplot(pd.Series(float(wy["t_cons"]), index=df.index), color="#10b981", linestyle=":", width=1.4)
+        )
+    if wy.get("t_full") and float(wy["t_full"]) > 0:
+        addplots.append(
+            mpf.make_addplot(pd.Series(float(wy["t_full"]), index=df.index), color="#34d399", linestyle=":", width=1.4)
+        )
+
 # ── Style ─────────────────────────────────────────────────────────────────────
 mc = mpf.make_marketcolors(
     up="#26a69a", down="#ef5350",

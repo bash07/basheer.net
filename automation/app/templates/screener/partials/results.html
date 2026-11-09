@@ -37,6 +37,9 @@
               {{ c.strategy_types|join(', ') if c.strategy_types else "DisplacementFVG" }}
             </td>
             <td class="py-3 px-3 text-right">
+              <a href="/technical?symbol={{ c.symbol }}" class="px-2 py-1 bg-zinc-900 hover:bg-zinc-800 text-emerald-400 rounded border border-zinc-700 text-[11px] transition inline-block mr-1">
+                📊 Chart
+              </a>
               <form action="/api/watchlist/add" method="POST" class="inline">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <input type="hidden" name="ticker" value="{{ c.symbol }}">

@@ -61,7 +61,11 @@ async def _fetch(symbol: str, timeframe: str):
 
 # ── Public interface ──────────────────────────────────────────────────────────
 
-async def fetch_and_render(symbol: str, timeframe: str = DEFAULT_TF) -> tuple[str, TAResult]:
+async def fetch_and_render(
+    symbol: str, 
+    timeframe: str = DEFAULT_TF, 
+    wyckoff_data: dict | None = None
+) -> tuple[str, TAResult]:
     """
     Fetch OHLCV, compute TA, render a chart PNG, return (png_path, TAResult).
     Caller must delete the PNG after sending (or use _shared/notify.notify_photo).
@@ -69,14 +73,25 @@ async def fetch_and_render(symbol: str, timeframe: str = DEFAULT_TF) -> tuple[st
     df, tf = await _fetch(symbol, timeframe)
     result = compute_ta(df, symbol=symbol, timeframe=tf)
 
-    png_path = await render_chart({
+    render_params = {
         "ohlcv_json":       result.ohlcv_json,
         "emas":             result.ema_series,
         "rsi":              result.rsi_series,
         "volume_profile":   result.volume_profile,
         "title":            f"{symbol} — {tf.upper()}",
-    })
+    }
+    if wyckoff_data:
+        render_params["wyckoff"] = wyckoff_data
+
+    png_path = await render_chart(render_params)
     return png_path, result
+
+
+async def fetch_ohlcv_and_ta(symbol: str, timeframe: str = DEFAULT_TF):
+    """Fetch OHLCV DataFrame and compute TAResult together."""
+    df, tf = await _fetch(symbol, timeframe)
+    result = compute_ta(df, symbol=symbol, timeframe=tf)
+    return df, tf, result
 
 
 async def fetch_ta_only(symbol: str, timeframe: str = DEFAULT_TF) -> TAResult:

@@ -1,0 +1,446 @@
+{% if error_msg %}
+  <div class="bg-rose-950/40 border border-rose-800 rounded-xl p-6 text-center text-xs font-mono text-rose-300">
+    <p class="font-bold text-sm mb-1">❌ Technical Analysis Error</p>
+    <p>{{ error_msg }}</p>
+  </div>
+{% elif data %}
+  {% set w = data.wyckoff %}
+  {% set ext = data.ext %}
+  {% set ta = data.ta %}
+
+  <!-- TICKER HERO & SIGNAL SUMMARY BANNER -->
+  <div class="bg-zinc-950 border border-zinc-800 rounded-xl p-5 space-y-4">
+    <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-zinc-800/80 pb-4">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-zinc-900 border border-zinc-800 flex items-center justify-center font-bold text-base text-white font-mono">
+          {{ data.symbol[:2] }}
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <h1 class="text-xl font-bold text-white tracking-tight font-mono">{{ data.symbol }}</h1>
+            <span class="px-2 py-0.5 rounded text-[10px] bg-zinc-900 text-zinc-300 border border-zinc-800 font-sans">{{ data.category }}</span>
+            <span class="px-2 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800 font-mono font-semibold uppercase">
+              {{ data.timeframe }} ({{ 'DAILY' if data.timeframe == '1d' else ('WEEKLY' if data.timeframe == '1wk' else 'MONTHLY') }})
+            </span>
+          </div>
+          <div class="text-xs text-zinc-400 mt-0.5 font-mono">
+            Mode: {{ 'Indian Equities (NSE)' if data.category == 'indian_stock' else ('Crypto Spot' if data.category == 'crypto' else ('Forex Market' if data.category == 'forex' else 'US Equities (NASDAQ/NYSE)')) }}
+          </div>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-6 font-mono">
+        <div>
+          <div class="text-[11px] text-zinc-500 uppercase tracking-wider">Last Price</div>
+          <div class="text-2xl font-bold text-white">
+            ${{ "%.2f"|format(data.current_price) if data.current_price >= 1 else "%.4f"|format(data.current_price) }}
+          </div>
+        </div>
+        <div>
+          <div class="text-[11px] text-zinc-500 uppercase tracking-wider">Session Change</div>
+          <div class="text-sm font-bold {% if data.change_pct >= 0 %}text-emerald-400{% else %}text-rose-400{% endif %} flex items-center gap-1">
+            {{ "%+.2f"|format(data.change_val) }} ({{ "%+.2f"|format(data.change_pct) }}%) {% if data.change_pct >= 0 %}🟢{% else %}🔴{% endif %}
+          </div>
+        </div>
+        <div class="hidden sm:block border-l border-zinc-800 pl-4">
+          <div class="text-[11px] text-zinc-500 uppercase tracking-wider">RVOL Volume Ratio</div>
+          <div class="text-sm font-semibold text-zinc-200">
+            {{ "%.2f"|format(data.volume_ratio) }}x 20D Avg {% if data.volume_ratio > 1.25 %}🟢{% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- KEY SIGNAL BADGES ROW -->
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono text-xs">
+      <div class="p-2.5 rounded-lg bg-zinc-900/70 border border-zinc-800">
+        <div class="text-[10px] text-zinc-500 uppercase">RSI (14) Status</div>
+        <div class="text-sm font-bold text-emerald-400 mt-0.5 flex items-center justify-between">
+          <span>{{ "%.1f"|format(ta.rsi) if ta.rsi is not none else "50.0" }}</span>
+          <span class="text-[10px] px-1.5 py-0.2 rounded bg-emerald-950/60 border border-emerald-800 text-emerald-300">
+            {{ ta.rsi_signal|upper }}
+          </span>
+        </div>
+      </div>
+      <div class="p-2.5 rounded-lg bg-zinc-900/70 border border-zinc-800">
+        <div class="text-[10px] text-zinc-500 uppercase">Trend Alignment</div>
+        <div class="text-sm font-bold text-sky-400 mt-0.5 flex items-center justify-between">
+          <span>{{ ta.trend|capitalize }}</span>
+          <span class="text-[10px] px-1.5 py-0.2 rounded bg-sky-950/60 border border-sky-800 text-sky-300">
+            {{ 'Above EMA' if 'bull' in ta.trend else 'Below EMA' }}
+          </span>
+        </div>
+      </div>
+      <div class="p-2.5 rounded-lg bg-zinc-900/70 border border-zinc-800">
+        <div class="text-[10px] text-zinc-500 uppercase">Bollinger Bandwidth</div>
+        <div class="text-sm font-bold text-amber-400 mt-0.5 flex items-center justify-between">
+          <span>{{ "%.2f"|format(ext.bb.bandwidth) }}%</span>
+          <span class="text-[10px] px-1.5 py-0.2 rounded bg-amber-950/60 border border-amber-800 text-amber-300">
+            {{ 'Squeeze' if ext.bb.bandwidth < 8 else 'Normal' }}
+          </span>
+        </div>
+      </div>
+      <div class="p-2.5 rounded-lg bg-zinc-900/70 border border-zinc-800">
+        <div class="text-[10px] text-zinc-500 uppercase">RSI Divergence</div>
+        <div class="text-sm font-bold text-emerald-400 mt-0.5 flex items-center justify-between">
+          <span>{{ ta.rsi_divergence|capitalize }}</span>
+          <span class="text-[10px] px-1.5 py-0.2 rounded bg-emerald-950/60 border border-emerald-800 text-emerald-300">
+            {{ 'DETECTED' if ta.rsi_divergence != 'none' else 'NONE' }}
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CANDLESTICK CHART CONTAINER (STREAMED FROM SUBPROCESS RENDERER) -->
+  <div class="bg-zinc-950 border border-zinc-800 rounded-xl p-5 space-y-3" x-data="{ wyckoffOverlay: true }">
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div class="flex items-center gap-3">
+        <h2 class="text-base font-bold text-white tracking-tight">Annotated Price Action & Technical Overlay</h2>
+        <span class="text-[11px] font-mono text-zinc-400 bg-zinc-900 px-2 py-0.5 rounded border border-zinc-800">
+          Subprocess Render Engine (Zero Parent RAM)
+        </span>
+      </div>
+      <div class="flex flex-wrap items-center gap-3 text-xs font-mono">
+        <button 
+          type="button"
+          @click="wyckoffOverlay = !wyckoffOverlay; $refs.chartImg.src = '/api/technical/chart-image?symbol={{ data.symbol }}&tf={{ data.timeframe }}&wyckoff=' + (wyckoffOverlay ? '1' : '0') + '&t=' + Date.now()"
+          class="px-2.5 py-1 rounded bg-amber-950/80 hover:bg-amber-900 text-amber-300 border border-amber-700 font-semibold transition flex items-center gap-1.5"
+        >
+          <span>🏛️ Wyckoff Overlay:</span>
+          <span :class="wyckoffOverlay ? 'text-emerald-400 font-bold' : 'text-zinc-500 font-bold'" x-text="wyckoffOverlay ? 'ON' : 'OFF'">ON</span>
+        </button>
+        <div class="flex items-center gap-1.5"><span class="w-2.5 h-0.5 bg-[#00bcd4]"></span><span class="text-zinc-400 text-[11px]">EMA 21</span></div>
+        <div class="flex items-center gap-1.5"><span class="w-2.5 h-0.5 bg-[#ff9800]"></span><span class="text-zinc-400 text-[11px]">EMA 50</span></div>
+        <div class="flex items-center gap-1.5"><span class="w-2.5 h-0.5 bg-[#9c27b0]"></span><span class="text-zinc-400 text-[11px]">EMA 100</span></div>
+        <div class="flex items-center gap-1.5"><span class="w-2.5 h-0.5 bg-[#f44336]"></span><span class="text-zinc-400 text-[11px]">EMA 200</span></div>
+      </div>
+    </div>
+
+    <!-- Chart Image Frame -->
+    <div class="w-full bg-[#0e0e11] rounded-lg border border-zinc-800/80 overflow-hidden relative min-h-[380px] flex items-center justify-center">
+      <img 
+        x-ref="chartImg"
+        src="/api/technical/chart-image?symbol={{ data.symbol }}&tf={{ data.timeframe }}&wyckoff=1" 
+        alt="{{ data.symbol }} Chart"
+        class="w-full h-auto object-contain rounded"
+        loading="lazy"
+      />
+    </div>
+  </div>
+
+  <!-- ================= WYCKOFF PATTERN PROGRESSION & VALIDATION ENGINE ================= -->
+  <div id="wyckoff-progression-panel" class="bg-zinc-950 border border-zinc-800 rounded-xl p-5 space-y-4">
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-zinc-800/80 pb-3">
+      <div class="flex items-center gap-2.5">
+        <span class="text-xl">🏛️</span>
+        <div>
+          <div class="flex items-center gap-2">
+            <h3 class="text-sm font-bold text-white tracking-tight">Wyckoff Pattern Progression & Schematic Validation</h3>
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold {% if w.state == 'accumulation' %}bg-emerald-950 text-emerald-400 border border-emerald-800{% elif w.state == 'distribution' %}bg-rose-950 text-rose-400 border border-rose-800{% else %}bg-zinc-800 text-zinc-300 border border-zinc-700{% endif %} font-mono">
+              ✓ {{ w.schematic_name|upper }}
+            </span>
+          </div>
+          <p class="text-xs text-zinc-400">Institutional absorption cycle & multi-stage phase verification</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2 font-mono text-xs">
+        <span class="text-zinc-500">Maturity:</span>
+        <span class="{% if w.state == 'accumulation' %}text-emerald-400{% elif w.state == 'distribution' %}text-rose-400{% else %}text-zinc-300{% endif %} font-bold">
+          {{ w.progress_pct }}% (Phase {{ w.active_phase }} {{ 'Verified' if w.progress_pct >= 60 else 'Active' }})
+        </span>
+      </div>
+    </div>
+
+    <!-- 5-PHASE INTERACTIVE PIPELINE STEPPER -->
+    <div class="grid grid-cols-1 sm:grid-cols-5 gap-3 font-mono text-xs">
+      {% for p in w.phases %}
+      <div class="p-3 rounded-lg relative {% if p.is_active %}bg-emerald-950/40 border-2 border-emerald-500 shadow-lg shadow-emerald-950/30{% elif p.status == 'VERIFIED' %}bg-zinc-900/80 border border-emerald-800/60{% else %}bg-zinc-900/50 border border-zinc-800{% endif %}">
+        <div class="flex items-center justify-between text-[11px] mb-1">
+          <span class="font-bold {% if p.is_active %}text-emerald-300{% elif p.status == 'VERIFIED' %}text-emerald-400{% else %}text-zinc-400{% endif %}">
+            {{ p.title }}
+          </span>
+          <span class="text-[10px] {% if p.is_active %}px-1.5 py-0.2 rounded bg-emerald-900/80 text-emerald-300 font-bold animate-pulse{% elif p.status == 'VERIFIED' %}text-emerald-400 font-semibold{% elif p.status == 'PENDING' %}text-amber-400 font-semibold{% else %}text-zinc-500 font-semibold{% endif %}">
+            {{ '⚡ ACTIVE' if p.is_active else ('✓ VERIFIED' if p.status == 'VERIFIED' else ('⏳ PENDING' if p.status == 'PENDING' else '🎯 PROJECTED')) }}
+          </span>
+        </div>
+        <div class="text-white font-semibold text-xs">{{ p.sub }}</div>
+        <p class="text-[10px] text-zinc-400 mt-1">{{ p.desc }}</p>
+        <div class="mt-2 text-[10px] {% if p.is_active %}text-emerald-400 font-semibold{% else %}text-zinc-500{% endif %} border-t border-zinc-800/60 pt-1">
+          {{ p.footer }}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <!-- THREE WYCKOFF LAWS VALIDATION CHECKLIST -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 font-mono text-xs">
+      {% for law in w.laws %}
+      <div class="p-2.5 rounded bg-zinc-950/70 border border-zinc-800/80">
+        <div class="flex items-center justify-between text-[11px] text-zinc-400 mb-1">
+          <span>{{ law.name }}</span>
+          <span class="{% if 'PASS' in law.status %}text-emerald-400{% else %}text-amber-400{% endif %} font-bold">
+            {{ law.status }}
+          </span>
+        </div>
+        <p class="text-[10px] text-zinc-400">{{ law.desc }}</p>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- QUANTITATIVE INDICATOR MATRIX & DIAGNOSTIC CARDS (2x2 GRID) -->
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+    <!-- CARD 1: MOVING AVERAGES & TREND HIERARCHY -->
+    <div class="bg-zinc-950 border border-zinc-800 rounded-xl p-5 space-y-3">
+      <h3 class="text-sm font-bold text-white flex items-center gap-2">
+        <span>📐</span> Moving Average Spectrum
+      </h3>
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs font-mono">
+          <thead class="text-zinc-500 border-b border-zinc-800 text-[10px] uppercase">
+            <tr>
+              <th class="py-1.5 text-left">Period</th>
+              <th class="py-1.5 text-left">Type</th>
+              <th class="py-1.5 text-right">Value</th>
+              <th class="py-1.5 text-right">Distance</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-zinc-800/40 text-zinc-300">
+            {% for ma in ext.mas_table %}
+            <tr>
+              <td class="py-2 font-semibold" style="color: {{ ma.color }}">{{ ma.period }}</td>
+              <td class="py-2 text-zinc-400">{{ ma.type }}</td>
+              <td class="py-2 text-right">${{ "%.2f"|format(ma.value) if ma.value >= 1 else "%.4f"|format(ma.value) }}</td>
+              <td class="py-2 text-right {% if ma.dist_pct >= 0 %}text-emerald-400{% else %}text-rose-400{% endif %} font-semibold">
+                {{ "%+.2f"|format(ma.dist_pct) }}%
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="p-2.5 rounded bg-zinc-900/80 border border-zinc-800 text-[11px] font-mono text-zinc-300">
+        <span class="text-emerald-400 font-bold">Trend Alignment:</span> {{ ta.trend|capitalize }}. 
+        {% if ta.crossovers %}{{ ta.crossovers|join(', ') }}{% else %}Price trading within established bands.{% endif %}
+      </div>
+    </div>
+
+    <!-- CARD 2: MOMENTUM & VOLATILITY GAUGES -->
+    <div class="bg-zinc-950 border border-zinc-800 rounded-xl p-5 space-y-3">
+      <h3 class="text-sm font-bold text-white flex items-center gap-2">
+        <span>⚡</span> Momentum & Volatility
+      </h3>
+      
+      <div class="space-y-3 font-mono text-xs">
+        <div class="p-2.5 rounded bg-zinc-900/60 border border-zinc-800/80">
+          <div class="flex justify-between text-zinc-400 text-[11px] mb-1">
+            <span>MACD (12, 26, 9)</span>
+            <span class="{% if ext.macd.bullish %}text-emerald-400{% else %}text-rose-400{% endif %} font-bold">
+              {{ 'Bullish Momentum 🟢' if ext.macd.bullish else 'Bearish Delta 🔴' }}
+            </span>
+          </div>
+          <div class="grid grid-cols-3 gap-2 text-center pt-1 border-t border-zinc-800/50">
+            <div>
+              <div class="text-[10px] text-zinc-500">MACD</div>
+              <div class="text-zinc-200 font-semibold">{{ "%+.2f"|format(ext.macd.val) }}</div>
+            </div>
+            <div>
+              <div class="text-[10px] text-zinc-500">Signal</div>
+              <div class="text-zinc-200 font-semibold">{{ "%+.2f"|format(ext.macd.signal) }}</div>
+            </div>
+            <div>
+              <div class="text-[10px] text-zinc-500">Hist</div>
+              <div class="{% if ext.macd.bullish %}text-emerald-400{% else %}text-rose-400{% endif %} font-bold">
+                {{ "%+.2f"|format(ext.macd.hist) }}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="p-2.5 rounded bg-zinc-900/60 border border-zinc-800/80">
+          <div class="flex justify-between text-zinc-400 text-[11px] mb-1">
+            <span>Bollinger Bands (20, 2)</span>
+            <span class="text-zinc-300 font-semibold">%B: {{ "%.2f"|format(ext.bb.pct_b) }}</span>
+          </div>
+          <div class="grid grid-cols-3 gap-2 text-center pt-1 border-t border-zinc-800/50">
+            <div>
+              <div class="text-[10px] text-zinc-500">Upper</div>
+              <div class="text-zinc-200">${{ "%.2f"|format(ext.bb.upper) }}</div>
+            </div>
+            <div>
+              <div class="text-[10px] text-zinc-500">Middle (20)</div>
+              <div class="text-zinc-200">${{ "%.2f"|format(ext.bb.mid) }}</div>
+            </div>
+            <div>
+              <div class="text-[10px] text-zinc-500">Lower</div>
+              <div class="text-zinc-200">${{ "%.2f"|format(ext.bb.lower) }}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="p-2.5 rounded bg-zinc-900/60 border border-zinc-800/80 flex items-center justify-between">
+          <div>
+            <div class="text-[10px] text-zinc-500 uppercase">Average True Range (ATR 14)</div>
+            <div class="text-zinc-200 font-bold">${{ "%.2f"|format(ext.atr) }} ({{ "%.2f"|format(ext.atr_pct) }}% Volatility)</div>
+          </div>
+          <div class="text-right">
+            <div class="text-[10px] text-zinc-500 uppercase">Volume Surge Ratio</div>
+            <div class="{% if data.volume_ratio > 1.25 %}text-emerald-400{% else %}text-zinc-200{% endif %} font-bold">
+              {{ "%.2f"|format(data.volume_ratio) }}x 20D SMA
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CARD 3: MULTI-EXTREMA DIVERGENCE ENGINE -->
+    <div class="bg-zinc-950 border border-zinc-800 rounded-xl p-5 space-y-3">
+      <h3 class="text-sm font-bold text-white flex items-center gap-2">
+        <span>🎯</span> Multi-Extrema Divergence Engine
+      </h3>
+      
+      <div class="space-y-2.5 font-mono text-xs">
+        <div class="p-3 rounded-lg {% if ta.rsi_divergence == 'bullish' %}bg-emerald-950/30 border border-emerald-800/60{% elif ta.rsi_divergence == 'bearish' %}bg-rose-950/30 border border-rose-800/60{% else %}bg-zinc-900/60 border border-zinc-800{% endif %}">
+          <div class="flex items-center justify-between {% if ta.rsi_divergence == 'bullish' %}text-emerald-400{% elif ta.rsi_divergence == 'bearish' %}text-rose-400{% else %}text-zinc-400{% endif %} font-semibold mb-1">
+            <span>{{ '🟢 Regular Bullish Divergence' if ta.rsi_divergence == 'bullish' else ('🔴 Regular Bearish Divergence' if ta.rsi_divergence == 'bearish' else '⚪ Divergence Scan') }}</span>
+            <span class="text-[10px] px-1.5 py-0.2 rounded bg-zinc-900">
+              {{ 'CONFIRMED' if ta.rsi_divergence != 'none' else 'BALANCED' }}
+            </span>
+          </div>
+          <p class="text-[11px] text-zinc-300">
+            {% if ta.rsi_divergence == 'bullish' %}
+              Price formed a lower trough while RSI formed a higher trough over the 90-bar window. Indicates momentum exhaustion of selling supply.
+            {% elif ta.rsi_divergence == 'bearish' %}
+              Price pushed to a higher peak while RSI logged a lower peak. Indicates thinning institutional buying interest.
+            {% else %}
+              No regular divergence detected across the evaluated swing peaks. Price and oscillator momentum are structurally aligned.
+            {% endif %}
+          </p>
+        </div>
+
+        <div class="p-3 rounded-lg bg-zinc-900/60 border border-zinc-800">
+          <div class="flex items-center justify-between text-zinc-400 font-semibold mb-1">
+            <span>Active Signals & Crossovers</span>
+            <span class="text-[10px] text-zinc-500">{{ ta.signals|length }} active</span>
+          </div>
+          <p class="text-[11px] text-zinc-400">
+            {% if ta.signals %}
+              {{ ta.signals|join(' · ') }}
+            {% else %}
+              No active momentum crossover triggers fired on current bar.
+            {% endif %}
+          </p>
+        </div>
+
+        <div class="p-3 rounded-lg bg-zinc-900/60 border border-zinc-800">
+          <div class="text-zinc-400 font-semibold mb-1 flex items-center gap-1.5">
+            <span>🔍 Prospective Setup Warnings</span>
+          </div>
+          <ul class="text-[11px] text-zinc-400 space-y-1 list-disc list-inside">
+            {% if ta.potential_signals %}
+              {% for ps in ta.potential_signals %}
+                <li>{{ ps }}</li>
+              {% endfor %}
+            {% else %}
+              <li>RSI within {{ "%.1f"|format(ta.rsi) if ta.rsi is not none else "50" }} neutral band.</li>
+              <li>Price distance from 200 EMA: {{ "%+.1f"|format(ext.mas_table[3].dist_pct) }}%.</li>
+            {% endif %}
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- CARD 4: WYCKOFF ORDER FLOW & POINT & FIGURE ENGINE -->
+    <div class="bg-zinc-950 border border-zinc-800 rounded-xl p-5 space-y-3">
+      <div class="flex items-center justify-between">
+        <h3 class="text-sm font-bold text-white flex items-center gap-2">
+          <span>🏛️</span> Wyckoff Order Flow & P&F Engine
+        </h3>
+        <span class="px-2 py-0.5 rounded text-[10px] bg-amber-950/80 text-amber-300 border border-amber-800 font-mono font-semibold">
+          Cause & Effect (2nd Law)
+        </span>
+      </div>
+
+      <div class="space-y-3 font-mono text-xs">
+        <!-- Regime & Phase Banner -->
+        <div class="p-3 rounded-lg bg-zinc-900/80 border border-zinc-800 space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="text-zinc-400 text-[11px] uppercase tracking-wider">Market State:</span>
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold {% if w.state == 'accumulation' %}bg-emerald-950 text-emerald-400 border border-emerald-800{% elif w.state == 'distribution' %}bg-rose-950 text-rose-400 border border-rose-800{% else %}bg-zinc-800 text-zinc-300 border border-zinc-700{% endif %}">
+              {{ '🟢 ACCUMULATION' if w.state == 'accumulation' else ('🔴 DISTRIBUTION' if w.state == 'distribution' else '⚪ NEUTRAL') }} ({{ "%+.1f"|format(w.score) }} / 100)
+            </span>
+          </div>
+          <div class="text-white font-semibold text-xs flex items-center justify-between">
+            <span class="text-zinc-400 text-[11px]">Phase:</span>
+            <span class="{% if w.state == 'accumulation' %}text-emerald-300{% elif w.state == 'distribution' %}text-rose-300{% else %}text-zinc-200{% endif %}">
+              Phase {{ w.active_phase }} ({{ 'The Shakeout / Spring' if w.active_phase == 'C' else ('Sign of Strength Breakout' if w.active_phase == 'D' else ('Building Cause' if w.active_phase == 'B' else ('Stopping Action' if w.active_phase == 'A' else 'Markup Trend'))) }})
+            </span>
+          </div>
+          <div class="text-[11px] text-zinc-400 flex items-center justify-between pt-1 border-t border-zinc-800/60">
+            <span>Squeeze Box:</span>
+            <span class="text-zinc-200 font-semibold">
+              ${{ "%.2f"|format(w.range_low) }} – ${{ "%.2f"|format(w.range_high) }} ({{ "%.1f"|format(w.range_atr) }}× ATR)
+            </span>
+          </div>
+        </div>
+
+        <!-- Order Flow Absorption Metrics Grid -->
+        <div class="grid grid-cols-2 gap-2">
+          <div class="p-2.5 rounded bg-zinc-900/60 border border-zinc-800">
+            <div class="text-[10px] text-zinc-500 uppercase">OBV Flow Slope</div>
+            <div class="{% if w.obv_slope > 0.05 %}text-emerald-400{% elif w.obv_slope < -0.05 %}text-rose-400{% else %}text-zinc-300{% endif %} font-bold text-xs mt-0.5">
+              {{ "%+.2f"|format(w.obv_slope) }} ({{ w.obv_desc }})
+            </div>
+          </div>
+          <div class="p-2.5 rounded bg-zinc-900/60 border border-zinc-800">
+            <div class="text-[10px] text-zinc-500 uppercase">IBS Mean (Absorption)</div>
+            <div class="{% if w.ibs_mean > 0.52 %}text-emerald-400{% elif w.ibs_mean < 0.48 %}text-rose-400{% else %}text-zinc-300{% endif %} font-bold text-xs mt-0.5">
+              {{ "%.1f"|format(w.ibs_mean * 100) }}% ({{ w.ibs_desc }})
+            </div>
+          </div>
+          <div class="p-2.5 rounded bg-zinc-900/60 border border-zinc-800">
+            <div class="text-[10px] text-zinc-500 uppercase">Wick Demand Ratio</div>
+            <div class="{% if w.wick_ratio > 1.2 %}text-emerald-400{% elif w.wick_ratio < 0.8 %}text-rose-400{% else %}text-zinc-300{% endif %} font-bold text-xs mt-0.5">
+              {{ "%.2f"|format(w.wick_ratio) }}× ({{ w.wick_desc }})
+            </div>
+          </div>
+          <div class="p-2.5 rounded bg-zinc-900/60 border border-zinc-800">
+            <div class="text-[10px] text-zinc-500 uppercase">Phase C Trigger</div>
+            <div class="text-amber-400 font-bold text-xs mt-0.5">{{ w.trigger_label }}</div>
+          </div>
+        </div>
+
+        <!-- Point & Figure (P&F 3-Box) Cause & Effect Projections -->
+        <div class="p-3 rounded-lg bg-zinc-950/80 border border-zinc-800/80 space-y-2">
+          <div class="flex items-center justify-between text-[11px]">
+            <span class="text-zinc-400 font-semibold">Point & Figure Projections:</span>
+            <span class="text-amber-300 font-mono">{{ w.pnf.horizontal_count }} Cols Base (Box ${{ "%.2f"|format(w.pnf.box_size) }})</span>
+          </div>
+          <div class="grid grid-cols-3 gap-2 text-center pt-1 border-t border-zinc-800/60">
+            <div>
+              <div class="text-[10px] text-zinc-500 uppercase">Cause Pts</div>
+              <div class="text-zinc-200 font-semibold">{{ "%+.1f"|format(w.pnf.cause_pts) }} pts</div>
+            </div>
+            <div>
+              <div class="text-[10px] text-zinc-500 uppercase">T1 (Conservative)</div>
+              <div class="text-emerald-400 font-bold">${{ "%.2f"|format(w.pnf.t_cons) }} ({{ "%+.1f"|format(w.pnf.t_cons_pct) }}%)</div>
+            </div>
+            <div>
+              <div class="text-[10px] text-zinc-500 uppercase">T2 (Full Base)</div>
+              <div class="text-emerald-300 font-bold">${{ "%.2f"|format(w.pnf.t_full) }} ({{ "%+.1f"|format(w.pnf.t_full_pct) }}%)</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Action / Info -->
+        <div class="p-2 rounded bg-zinc-900 text-center text-[11px] text-zinc-400">
+          💡 Query live Telegram diagnostics anytime via <code class="text-emerald-400">/wyckoff {{ data.symbol }}</code>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+{% endif %}

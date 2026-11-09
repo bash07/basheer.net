@@ -106,6 +106,7 @@ def test_authenticated_pages_render(client):
     pages = [
         "/trader",
         "/watchlist",
+        "/technical",
         "/screener",
         "/fundamental",
         "/blog",

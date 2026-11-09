@@ -139,6 +139,7 @@ if os.path.exists(static_dir):
 from routers.auth import router as auth_router
 from routers.trader_ui import router as trader_router
 from routers.watchlist_ui import router as watchlist_router
+from routers.technical_ui import router as technical_router
 from routers.screener_ui import router as screener_router
 from routers.fundamental_ui import router as fundamental_router
 from routers.blog_ui import router as blog_router
@@ -149,6 +150,7 @@ from routers.chat_ui import router as chat_router
 app.include_router(auth_router)
 app.include_router(trader_router)
 app.include_router(watchlist_router)
+app.include_router(technical_router)
 app.include_router(screener_router)
 app.include_router(fundamental_router)
 app.include_router(blog_router)

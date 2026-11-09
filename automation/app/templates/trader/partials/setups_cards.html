@@ -9,7 +9,15 @@
             <span class="px-2 py-0.5 rounded text-[11px] font-semibold {% if s.direction.lower() == 'long' %}bg-emerald-950 text-emerald-400 border border-emerald-800{% else %}bg-rose-950 text-rose-400 border border-rose-800{% endif %}">
               {{ s.direction|upper }}
             </span>
+            {% if 'wyckoff' in s.setup_name|lower %}
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-950/80 text-amber-300 border border-amber-700 font-mono">
+              WYCKOFF
+            </span>
+            {% endif %}
             <span class="text-xs text-zinc-400 font-mono">{{ s.mode|upper }}</span>
+            <a href="/technical?symbol={{ s.ticker }}" class="text-[11px] text-emerald-400 hover:underline font-mono">
+              📊 TA ↗
+            </a>
           </div>
           <div class="text-xs text-zinc-400 mt-1">Setup: {{ s.setup_name }} | {{ s.bias }}</div>
         </div>
